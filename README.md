@@ -1,36 +1,43 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# EggplantCare — Eggplant Pest Scanner
 
-## Getting Started
+Next.js app that identifies eggplant pests from a photo and recommends pesticides and treatment.
+Inference runs fully in the browser with TensorFlow.js using the Teachable Machine model in `public/model/`.
 
-First, run the development server:
+Detects: aphids, flea beetle, fruit & shoot borer, thrips, healthy leaf, healthy fruit.
+
+## Run
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev          # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Use on your phone
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Live camera access requires HTTPS. Start the dev server on your network with a self-signed certificate:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run dev:phone
+```
 
-## Learn More
+Then open `https://<your-computer-ip>:3000` on your phone (same Wi-Fi) and accept the certificate warning.
+The "Take / upload photo" button works over plain HTTP too — it opens the phone's camera app directly.
 
-To learn more about Next.js, take a look at the following resources:
+## Structure
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- `public/model/` — Teachable Machine export (`model.json`, `weights.bin`, `metadata.json`)
+- `src/lib/model.ts` — model loading + preprocessing (center-crop 224×224, normalise to [-1, 1])
+- `src/lib/pests.ts` — pest info, pesticides, treatment and prevention
+- `src/components/Scanner.tsx` — camera / upload UI
+- `src/components/ResultCard.tsx` — diagnosis and treatment display
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+To update the model, replace the three files in `public/model/`. If you add classes, add matching entries in `src/lib/pests.ts`.
 
-## Deploy on Vercel
+## "No eggplant detected"
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The model only knows its trained classes, so two layers keep it from labelling faces or objects as pests:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. **Plant colour check** (`src/lib/plantCheck.ts`) — before the model runs, images with less than
+   15% leaf-green / eggplant-purple pixels are rejected. Tune `MIN_PLANT_RATIO` if needed.
+2. **`not_eggplant` class** — retrain in Teachable Machine with a class named `not_eggplant`
+   (faces, hands, soil, sky, other plants…). The app treats it as "No eggplant detected" automatically.
