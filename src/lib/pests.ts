@@ -6,8 +6,18 @@ export type Pesticide = {
   note: string;
 };
 
+export type PestImage = {
+  src: string;
+  alt: string;
+  credit: string;
+  license: string;
+  licenseUrl: string;
+  sourceUrl: string;
+};
+
 export type PestInfo = {
   label: string;
+  images?: PestImage[];
   name: string;
   scientific?: string;
   healthy: boolean;
@@ -22,6 +32,48 @@ export type PestInfo = {
 export const PESTS: Record<string, PestInfo> = {
   aphids: {
     label: "aphids",
+    images: [
+      {
+        src: "/pests/aphids/1.webp",
+        alt: "Cotton aphids on a leaf, close-up",
+        credit: "Alex Abair",
+        license: "CC BY 4.0",
+        licenseUrl: "https://creativecommons.org/licenses/by/4.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Aphis_gossypii_252211094.jpg",
+      },
+      {
+        src: "/pests/aphids/2.webp",
+        alt: "Green peach aphid on a leaf, close-up",
+        credit: "Jules Verne Times Two",
+        license: "CC BY-SA 4.0",
+        licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Green_peach_aphid_(Myzus_persicae)_on_a_leaf,_Lisbon,_Portugal_(approx._GPS_location)_julesvernex2.jpg",
+      },
+      {
+        src: "/pests/aphids/3.webp",
+        alt: "Green peach aphids on a stem, close-up",
+        credit: "Jules Verne Times Two",
+        license: "CC BY-SA 4.0",
+        licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Green_peach_aphid_(Myzus_persicae)_on_a_stem,_Lisbon,_Portugal_(approx._GPS_location)_julesvernex2.jpg",
+      },
+      {
+        src: "/pests/aphids/4.webp",
+        alt: "Yellow cotton aphids under a leaf",
+        credit: "Dr Lewis Wilson, CSIRO",
+        license: "CC BY 3.0",
+        licenseUrl: "https://creativecommons.org/licenses/by/3.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:CSIRO_ScienceImage_7331_Aphids_on_cotton_7.jpg",
+      },
+      {
+        src: "/pests/aphids/5.webp",
+        alt: "Cotton aphids on a flower bud",
+        credit: "Flowersabc",
+        license: "CC BY-SA 2.0",
+        licenseUrl: "https://creativecommons.org/licenses/by-sa/2.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Aphis_gossypii_%D0%91%D0%B0%D1%85%D1%87%D0%B5%D0%B2%D0%B0%D1%8F_(%D1%85%D0%BB%D0%BE%D0%BF%D0%BA%D0%BE%D0%B2%D0%B0%D1%8F)_%D1%82%D0%BB%D1%8F_-_5777515999.jpg",
+      },
+    ],
     name: "Aphids",
     scientific: "Aphis gossypii",
     healthy: false,
@@ -54,6 +106,48 @@ export const PESTS: Record<string, PestInfo> = {
   },
   flea_beetle: {
     label: "flea_beetle",
+    images: [
+      {
+        src: "/pests/flea_beetle/1.webp",
+        alt: "Flea beetle on a leaf, close-up",
+        credit: "Robert Webster",
+        license: "CC BY-SA 4.0",
+        licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Epitrix_fuscula_-_inat_73678456.jpg",
+      },
+      {
+        src: "/pests/flea_beetle/2.webp",
+        alt: "Potato flea beetle, close-up",
+        credit: "Robert Webster",
+        license: "CC BY-SA 4.0",
+        licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Epitrix_cucumeris_-_inat_71803435.jpg",
+      },
+      {
+        src: "/pests/flea_beetle/3.webp",
+        alt: "Flea beetle, top view",
+        credit: "Robert Webster",
+        license: "CC BY-SA 4.0",
+        licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Epitrix_brevis_-_inat_71803402.jpg",
+      },
+      {
+        src: "/pests/flea_beetle/4.webp",
+        alt: "Flea beetle on a leaf tip",
+        credit: "xpda",
+        license: "CC BY-SA 4.0",
+        licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Epitrix_P1280533a.jpg",
+      },
+      {
+        src: "/pests/flea_beetle/5.webp",
+        alt: "Tobacco flea beetle specimen",
+        credit: "Natasha Wright, Bugwood.org",
+        license: "CC BY 3.0 US",
+        licenseUrl: "https://creativecommons.org/licenses/by/3.0/us/deed.en",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Tobacco_flea_beetle_-_Epitrix_hirtipennis_UGA5205021.jpg",
+      },
+    ],
     name: "Flea Beetle",
     scientific: "Epitrix spp. / Psylliodes spp.",
     healthy: false,
@@ -85,6 +179,48 @@ export const PESTS: Record<string, PestInfo> = {
   },
   fruit_shoot_borer: {
     label: "fruit_shoot_borer",
+    images: [
+      {
+        src: "/pests/fruit_shoot_borer/1.webp",
+        alt: "Adult eggplant fruit and shoot borer moth",
+        credit: "Donald Hobern",
+        license: "CC BY 2.0",
+        licenseUrl: "https://creativecommons.org/licenses/by/2.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Leucinodes_orbonalis.jpg",
+      },
+      {
+        src: "/pests/fruit_shoot_borer/2.webp",
+        alt: "Fruit and shoot borer moth specimen",
+        credit: "Komal et al. (2021)",
+        license: "CC BY 4.0",
+        licenseUrl: "https://creativecommons.org/licenses/by/4.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Leucinodes_orbonalis_(10.3897-BDJ.9.e73997)_Figure_30e.jpg",
+      },
+      {
+        src: "/pests/fruit_shoot_borer/3.webp",
+        alt: "Borer larva inside a cut eggplant fruit",
+        credit: "Chirag85",
+        license: "CC BY-SA 4.0",
+        licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Leucinodes_orbonalis_(Brinjal_Fruit_Borer).jpg",
+      },
+      {
+        src: "/pests/fruit_shoot_borer/4.webp",
+        alt: "Illustration of the borer caterpillar",
+        credit: "George Vernon Hudson",
+        license: "Public domain",
+        licenseUrl: "https://creativecommons.org/publicdomain/mark/1.0/",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Fig_39_MA_I437601_TePapa_Plate-II-The-butterflies_full_(cropped).jpg",
+      },
+      {
+        src: "/pests/fruit_shoot_borer/5.webp",
+        alt: "Fruit and shoot borer moth, side view",
+        credit: "Donald Hobern",
+        license: "CC BY 2.0",
+        licenseUrl: "https://creativecommons.org/licenses/by/2.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Leucinodes_orbonalis2.jpg",
+      },
+    ],
     name: "Fruit & Shoot Borer",
     scientific: "Leucinodes orbonalis",
     healthy: false,
@@ -118,6 +254,48 @@ export const PESTS: Record<string, PestInfo> = {
   },
   thrips: {
     label: "thrips",
+    images: [
+      {
+        src: "/pests/thrips/1.webp",
+        alt: "Western flower thrips, extreme close-up",
+        credit: "Dave Kirkeby",
+        license: "CC BY-SA 4.0",
+        licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Frankliniella_occidentalis_7826crop.jpg",
+      },
+      {
+        src: "/pests/thrips/2.webp",
+        alt: "Western flower thrips on a flower",
+        credit: "Dave Kirkeby",
+        license: "CC BY-SA 4.0",
+        licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Frankliniella_occidentalis_7798.jpg",
+      },
+      {
+        src: "/pests/thrips/3.webp",
+        alt: "Western flower thrips feeding on pollen",
+        credit: "Dave Kirkeby",
+        license: "CC BY-SA 4.0",
+        licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Frankliniella_occidentalis_7899.jpg",
+      },
+      {
+        src: "/pests/thrips/4.webp",
+        alt: "Western flower thrips on a leaf",
+        credit: "Frank Peairs, Bugwood.org",
+        license: "CC BY 3.0",
+        licenseUrl: "https://creativecommons.org/licenses/by/3.0",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Frankliniella_occidentalis_5364132-LGPT.jpg",
+      },
+      {
+        src: "/pests/thrips/5.webp",
+        alt: "Western flower thrips, top view",
+        credit: "Jesse Rorabaugh",
+        license: "CC0",
+        licenseUrl: "http://creativecommons.org/publicdomain/zero/1.0/deed.en",
+        sourceUrl: "https://commons.wikimedia.org/wiki/File:Frankliniella_occidentalis_14827640.jpg",
+      },
+    ],
     name: "Thrips",
     scientific: "Thrips palmi",
     healthy: false,

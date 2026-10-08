@@ -197,9 +197,11 @@ function NoEggplantCard() {
       <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-leaf-100 text-leaf-600">
         <SearchOffIcon className="h-7 w-7" />
       </div>
-      <h2 className="mt-4 text-2xl font-semibold tracking-tight text-leaf-950">No eggplant detected</h2>
+      <h2 className="mt-4 text-2xl font-semibold tracking-tight text-leaf-950">This is not an eggplant</h2>
       <p className="mt-2 text-sm text-leaf-900/70">
-        We couldn&apos;t find an eggplant leaf or fruit in this photo, so no diagnosis was made.
+        EggplantCare only checks eggplant <strong className="font-medium text-leaf-900">leaves</strong> and{" "}
+        <strong className="font-medium text-leaf-900">fruit</strong>. We couldn&apos;t find either in this photo, so no
+        diagnosis was made.
       </p>
       <ul className="mt-5 space-y-2 text-left text-sm text-leaf-900/80">
         {[

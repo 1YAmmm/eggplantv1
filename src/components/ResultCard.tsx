@@ -1,5 +1,6 @@
 import type { Prediction } from "@/lib/model";
 import { getPest, type Pesticide } from "@/lib/pests";
+import PestGallery from "./PestGallery";
 
 const LOW_CONFIDENCE = 0.6;
 
@@ -31,6 +32,8 @@ export default function ResultCard({ predictions }: { predictions: Prediction[] 
           <div className="h-full rounded-full bg-leaf-300" style={{ width: `${confidence}%` }} />
         </div>
       </header>
+
+      {pest.images && pest.images.length > 0 && <PestGallery key={pest.label} images={pest.images} />}
 
       <div className="space-y-8 px-6 py-6">
         {lowConfidence && (
