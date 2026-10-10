@@ -1,61 +1,72 @@
-import * as tf from "@tensorflow/tfjs";
+import { getGlobalLiteRtPromise, loadAndCompile, loadLiteRt, Tensor, type CompiledModel } from "@litertjs/core";
+import { checkLighting, type Lighting } from "./lighting";
 import { MIN_PLANT_RATIO, plantColorRatio } from "./plantCheck";
 
-const MODEL_URL = "/model/model.json";
-const METADATA_URL = "/model/metadata.json";
-const GATE_URL = "/model/gate/model.json";
-const GATE_CONFIG_URL = "/model/gate/config.json";
+/** MobileNetV3 exported by ml/scripts/export_to_tflite.py: [1, 224, 224, 3] float32 in, 6 logits out. */
+const MODEL_URL = "/model/eggplant_model_float16.tflite";
+/** Copy of ml/models/tflite/class_names.json; output index i is labels[i]. */
+const LABELS_URL = "/model/class_names.json";
+/** LiteRT.js WASM runtime, copied from node_modules by scripts/copy-litert-wasm.mjs. */
+const WASM_DIR = "/litert/";
+
+const IMAGE_SIZE = 224;
+/** ImageNet normalisation, same as val_transforms in train_v2.py. */
+const MEAN = [0.485, 0.456, 0.406];
+const STD = [0.229, 0.224, 0.225];
 
 /**
- * Labels that mean "not an eggplant". If you retrain in Teachable Machine with a
- * class using one of these names, the app treats it as "No eggplant detected".
+ * Labels that mean "not an eggplant". If you retrain with a class using one of
+ * these names, the app treats it as "No eggplant detected".
  */
 const REJECT_LABELS = new Set(["not_eggplant", "no_eggplant", "background", "unknown", "other", "none"]);
 
 export type Prediction = { label: string; probability: number };
 
 export type Diagnosis =
-  | { kind: "eggplant"; predictions: Prediction[]; eggplantScore: number }
-  | { kind: "not_eggplant"; reason: "no_plant" | "gate" | "model"; eggplantScore: number };
+  | { kind: "eggplant"; predictions: Prediction[]; lighting: Lighting }
+  | { kind: "not_eggplant"; reason: "no_plant" | "model"; lighting: Lighting };
 
-type Metadata = { labels: string[]; imageSize: number };
-type GateConfig = { threshold: number };
-
-type Loaded = {
-  /** MobileNet feature extractor: image -> 1280 features. */
-  backbone: tf.LayersModel;
-  /** Teachable Machine classifier head: 1280 features -> pest classes. */
-  head: tf.LayersModel;
-  /** "Is this an eggplant leaf/fruit?" head: 1280 features -> score 0..1. */
-  gate: tf.LayersModel | null;
-  gateThreshold: number;
-  meta: Metadata;
-};
+type Loaded = { model: CompiledModel; labels: string[] };
 
 let cached: Promise<Loaded> | null = null;
+
+/**
+ * LiteRT's runtime writes its startup chatter ("INFO: Created XNNPACK delegate…") to console.error,
+ * which `next dev` then prints as browser errors with stack traces. Drop the noise (INFO lines and the
+ * NPU warning, which is always expected in a browser) and route the rest by severity.
+ * The WASM loader passes `self.Module` to the runtime, so this must be set before loadLiteRt().
+ */
+function quietLiteRtLogs() {
+  const isNoise = (line: string) => line.startsWith("INFO:") || line.includes("npu_registry");
+  (globalThis as { Module?: unknown }).Module = {
+    print: (line: string) => {
+      if (!isNoise(line)) console.log(line);
+    },
+    printErr: (line: string) => {
+      if (isNoise(line)) return;
+      if (line.startsWith("WARNING:")) console.warn(line);
+      else console.error(line);
+    },
+  };
+}
 
 export function loadModel() {
   if (!cached) {
     cached = (async () => {
-      await tf.ready();
-      const [model, meta, gate, gateConfig] = await Promise.all([
-        tf.loadLayersModel(MODEL_URL),
-        fetch(METADATA_URL).then((r) => r.json() as Promise<Metadata>),
-        tf.loadLayersModel(GATE_URL).catch(() => null),
-        fetch(GATE_CONFIG_URL)
-          .then((r) => (r.ok ? (r.json() as Promise<GateConfig>) : null))
-          .catch(() => null),
+      // loadLiteRt() may only be called once per page, even across hot reloads of this module.
+      if (!getGlobalLiteRtPromise()) quietLiteRtLogs();
+      await (getGlobalLiteRtPromise() ?? loadLiteRt(WASM_DIR));
+      const [model, labels] = await Promise.all([
+        loadAndCompile(MODEL_URL, { accelerator: "wasm" }),
+        fetch(LABELS_URL).then((r) => r.json() as Promise<string[]>),
       ]);
-      // Teachable Machine exports Sequential[backbone, head]; split it so the
-      // gate can reuse the backbone features instead of running a second network.
-      const [backbone, head] = model.layers as unknown as [tf.LayersModel, tf.LayersModel];
+      const outputs = model.getOutputDetails()[0].shape.at(-1);
+      if (outputs !== labels.length) {
+        throw new Error(`Model has ${outputs} outputs but ${LABELS_URL} lists ${labels.length} labels.`);
+      }
       // Warm up so the first real prediction is fast.
-      tf.tidy(() => {
-        const f = backbone.predict(tf.zeros([1, meta.imageSize, meta.imageSize, 3])) as tf.Tensor;
-        head.predict(f);
-        gate?.predict(f);
-      });
-      return { backbone, head, gate, gateThreshold: gateConfig?.threshold ?? 0.5, meta };
+      await run(model, new Float32Array(IMAGE_SIZE * IMAGE_SIZE * 3));
+      return { model, labels };
     })().catch((err) => {
       cached = null;
       throw err;
@@ -64,59 +75,71 @@ export function loadModel() {
   return cached;
 }
 
-/** Center-crops to a square and resizes, matching Teachable Machine's preprocessing. */
-function toSquareCanvas(source: CanvasImageSource, w: number, h: number, size: number) {
+/** Runs the model on an NHWC input and returns softmax probabilities. */
+async function run(model: CompiledModel, pixels: Float32Array) {
+  const input = new Tensor(pixels, [1, IMAGE_SIZE, IMAGE_SIZE, 3]);
+  let outputs: Tensor[] | undefined;
+  try {
+    outputs = await model.run(input);
+    return softmax(outputs[0].toTypedArray() as Float32Array);
+  } finally {
+    input.delete();
+    outputs?.forEach((t) => t.delete());
+  }
+}
+
+function softmax(logits: Float32Array) {
+  const max = Math.max(...logits);
+  const exps = Array.from(logits, (v) => Math.exp(v - max));
+  const sum = exps.reduce((a, b) => a + b, 0);
+  return exps.map((e) => e / sum);
+}
+
+/** Stretches the whole image to a square, matching the training resize (no crop). */
+function toSquareCanvas(source: CanvasImageSource, size: number) {
   const canvas = document.createElement("canvas");
   canvas.width = size;
   canvas.height = size;
-  const side = Math.min(w, h);
   const ctx = canvas.getContext("2d", { willReadFrequently: true })!;
-  ctx.drawImage(source, (w - side) / 2, (h - side) / 2, side, side, 0, 0, size, size);
+  // Smooth downscaling of large phone photos, closer to PIL's antialiased resize used in training.
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, 0, 0, size, size);
   return canvas;
 }
 
+/** `skipPlantCheck` runs the classifier even when the colour check found no plant (the "ask AI to double-check" button). */
 export async function classify(
   source: HTMLImageElement | HTMLVideoElement | HTMLCanvasElement,
+  { skipPlantCheck = false }: { skipPlantCheck?: boolean } = {},
 ): Promise<Diagnosis> {
-  const { backbone, head, gate, gateThreshold, meta } = await loadModel();
-  const w = source instanceof HTMLVideoElement ? source.videoWidth : source instanceof HTMLImageElement ? source.naturalWidth : source.width;
-  const h = source instanceof HTMLVideoElement ? source.videoHeight : source instanceof HTMLImageElement ? source.naturalHeight : source.height;
-  const canvas = toSquareCanvas(source, w, h, meta.imageSize);
+  const { model, labels } = await loadModel();
+  const canvas = toSquareCanvas(source, IMAGE_SIZE);
 
   // 1. Cheap colour check: no leaf-green / eggplant-purple at all -> reject.
-  const pixels = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height).data;
-  const { plant } = plantColorRatio(pixels, canvas.width, canvas.height);
-  if (plant < MIN_PLANT_RATIO) {
-    return { kind: "not_eggplant", reason: "no_plant", eggplantScore: 0 };
+  const pixels = canvas.getContext("2d")!.getImageData(0, 0, IMAGE_SIZE, IMAGE_SIZE).data;
+  const lighting = checkLighting(pixels);
+  const { plant } = plantColorRatio(pixels, IMAGE_SIZE, IMAGE_SIZE);
+  if (!skipPlantCheck && plant < MIN_PLANT_RATIO) {
+    return { kind: "not_eggplant", reason: "no_plant", lighting };
   }
 
-  // 2. Shared features, then the eggplant gate and the pest classifier.
-  const [gateOut, probs] = tf.tidy(() => {
-    const input = tf.browser.fromPixels(canvas).toFloat().div(127.5).sub(1).expandDims(0);
-    const features = backbone.predict(input) as tf.Tensor;
-    return [
-      gate ? (gate.predict(features) as tf.Tensor).squeeze() : tf.scalar(1),
-      (head.predict(features) as tf.Tensor).squeeze(),
-    ];
-  });
-  const [eggplantScore] = await gateOut.data();
-  const values = await probs.data();
-  tf.dispose([gateOut, probs]);
-
-  if (eggplantScore < gateThreshold) {
-    return { kind: "not_eggplant", reason: "gate", eggplantScore };
+  // 2. Pest classifier. RGBA 0-255 -> normalised RGB, NHWC.
+  const input = new Float32Array(IMAGE_SIZE * IMAGE_SIZE * 3);
+  for (let p = 0, i = 0; p < pixels.length; p += 4) {
+    for (let c = 0; c < 3; c++, i++) input[i] = (pixels[p + c] / 255 - MEAN[c]) / STD[c];
   }
+  const probs = await run(model, input);
 
-  const predictions = meta.labels
-    .map((label, i) => ({ label, probability: values[i] }))
+  const predictions = labels
+    .map((label, i) => ({ label, probability: probs[i] }))
     .sort((a, b) => b.probability - a.probability);
 
   if (REJECT_LABELS.has(predictions[0].label.toLowerCase())) {
-    return { kind: "not_eggplant", reason: "model", eggplantScore };
+    return { kind: "not_eggplant", reason: "model", lighting };
   }
   return {
     kind: "eggplant",
-    eggplantScore,
     predictions: predictions.filter((p) => !REJECT_LABELS.has(p.label.toLowerCase())),
+    lighting,
   };
 }

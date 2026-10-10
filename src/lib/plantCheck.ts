@@ -1,7 +1,7 @@
 /**
  * Cheap colour-based gate that runs before the classifier.
  *
- * The Teachable Machine model only knows its trained classes, so it will label a
+ * The pest model only knows its trained classes, so it will label a
  * face or a wall as a pest. This check rejects images that don't contain enough
  * leaf-green or eggplant-purple pixels to plausibly be an eggplant plant/fruit.
  */

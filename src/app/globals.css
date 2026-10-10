@@ -42,3 +42,18 @@ body {
 .scan-line {
   animation: scan 1.6s ease-in-out infinite;
 }
+
+@keyframes focus-ring {
+  0% { scale: 1.5; opacity: 0; }
+  20% { scale: 1; opacity: 1; }
+  80% { opacity: 1; }
+  100% { opacity: 0; }
+}
+.focus-ring {
+  animation: focus-ring 1.2s ease-out forwards;
+}
+
+/* Keep the page from scrolling behind an open modal (<dialog>). */
+body:has(dialog[open]) {
+  overflow: hidden;
+}

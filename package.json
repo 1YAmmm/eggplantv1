@@ -7,10 +7,12 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "dev:phone": "next dev -H 0.0.0.0 --experimental-https"
+    "test": "node --no-warnings --import ./tests/register.mjs --test \"tests/*.test.mjs\"",
+    "dev:phone": "next dev -H 0.0.0.0 --experimental-https",
+    "postinstall": "node scripts/copy-litert-wasm.mjs"
   },
   "dependencies": {
-    "@tensorflow/tfjs": "^4.22.0",
+    "@litertjs/core": "^2.5.3",
     "next": "16.4.0",
     "react": "19.3.0",
     "react-dom": "19.3.0"

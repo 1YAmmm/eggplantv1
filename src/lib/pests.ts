@@ -1,9 +1,19 @@
 export type Severity = "none" | "moderate" | "high";
 
 export type Pesticide = {
+  /** Active ingredient, or the name of the homemade spray. */
   name: string;
   type: "Organic" | "Biological" | "Chemical";
+  /** Example product sold in the Philippines; only products confirmed on the maker's Philippine site. */
+  brand?: string;
+  /** How much to use and when. */
   note: string;
+  /** Why it is a good choice; shown in the details modal. */
+  why: string[];
+  /** Where to find it. */
+  where: string;
+  /** Photo for the details modal; a placeholder is shown when there is none. */
+  image?: PestImage;
 };
 
 export type PestImage = {
@@ -11,8 +21,12 @@ export type PestImage = {
   alt: string;
   credit: string;
   license: string;
-  licenseUrl: string;
-  sourceUrl: string;
+  /** Left out for photos with no public licence page (for example a seller's product photo). */
+  licenseUrl?: string;
+  /** Left out when the original page is unknown. */
+  sourceUrl?: string;
+  /** "contain" shows the whole picture (tall product bottles); the default "cover" fills the frame and crops. */
+  fit?: "cover" | "contain";
 };
 
 export type PestInfo = {
@@ -27,6 +41,173 @@ export type PestInfo = {
   pesticides: Pesticide[];
   treatment: string[];
   prevention: string[];
+};
+
+/**
+ * Photos for the pesticide details modal. The plant extracts use free-licensed Wikimedia Commons photos.
+ * The four pack shots (cypermethrin, chlorantraniliprole, cyantraniliprole, spinosad) are sellers' product photos,
+ * not free-licensed, and they show other brands of the same active ingredient (the credit line says which). The
+ * spinosad one is a US garden bait, not the Success product named on the card.
+ * Products without a photo show a placeholder until you add one (set `image`).
+ */
+const PESTICIDE_PHOTOS = {
+  laundrySoap: {
+    src: "/pesticides/laundry-soap.webp",
+    alt: "A plain bar of soap",
+    credit: "Lacrimosus",
+    license: "Public domain",
+    licenseUrl: "https://creativecommons.org/publicdomain/mark/1.0",
+    sourceUrl: "https://commons.wikimedia.org/wiki/File:A_bar_of_soap.jpg",
+  },
+  oregano: {
+    src: "/pesticides/oregano.webp",
+    alt: "Oregano (Plectranthus amboinicus) leaves",
+    credit: "Aathavan jaffna",
+    license: "CC BY-SA 3.0",
+    licenseUrl: "https://creativecommons.org/licenses/by-sa/3.0",
+    sourceUrl: "https://commons.wikimedia.org/wiki/File:Plectranthus_amboinicus_in_jaffna.JPG",
+  },
+  langkawas: {
+    src: "/pesticides/langkawas.webp",
+    alt: "Langkawas (galangal) rhizomes",
+    credit: "Ruth Hartnup",
+    license: "CC BY 2.0",
+    licenseUrl: "https://creativecommons.org/licenses/by/2.0",
+    sourceUrl: "https://commons.wikimedia.org/wiki/File:Galangal_(562251733).jpg",
+  },
+  cypermethrin: {
+    src: "/pesticides/cypermethrin.webp",
+    alt: "A bottle of Magnum 5 (Aldiz), a cypermethrin insecticide, on a store counter",
+    credit: "Shopee seller listing",
+    license: "Product photo, © its owner",
+    sourceUrl: "https://down-ph.img.susercontent.com/file/ph-11134207-81ztc-me45bzib9af537",
+    fit: "contain",
+  },
+  chlorantraniliprole: {
+    src: "/pesticides/chlorantraniliprole.webp",
+    alt: "A 250 mL bottle of Agway Elicor 5SC, a chlorantraniliprole 50 g/L insecticide whose label lists eggplant",
+    credit: "Lazada seller listing (shows Agway Elicor 5SC, which also contains chlorantraniliprole)",
+    license: "Product photo, © its owner",
+    fit: "contain",
+  },
+  spinosad: {
+    src: "/pesticides/spinosad.webp",
+    alt: "A jar of Fertilome Spinosad Plus, a US garden bait that contains spinosad. It is not the Success product named on this card.",
+    credit: "Google Images (shows Fertilome Spinosad Plus, a US garden bait, not Success: check the label of the product you buy)",
+    license: "Product photo, © its owner",
+    fit: "contain",
+  },
+  cyantraniliprole: {
+    src: "/pesticides/cyantraniliprole.webp",
+    alt: "A bottle of Awiner Biotech Cyantraniliprole 10% + Chlorfenapyr SC insecticide, 500 ml",
+    credit: "Awiner Biotech product listing",
+    license: "Product photo, © its owner",
+    fit: "contain",
+  },
+} satisfies Record<string, PestImage>;
+
+/*
+ * Recommendations are limited to what is sold or grown in the Philippines. The branded products below
+ * were checked against the makers' Philippine product pages and FPA-registered product sheets (FMC:
+ * Prevathon 5SC, Benevia; Corteva: Success). The plant extracts come from UPLB organic-vegetable
+ * research. Always follow the printed label, and confirm FPA registration before buying.
+ */
+const SOAP_SPRAY: Pesticide = {
+  name: "Laundry soap spray (sabon panlaba)",
+  type: "Organic",
+  note: "Dissolve about 20 g of grated plain bar soap (2%) in 1 L of water. Spray leaf undersides in the late afternoon and repeat after 3–5 days. Use plain bar soap, not detergent powder or soap with bleach, and test on a few leaves first.",
+  why: [
+    "Cheap and sold in any palengke or sari-sari store.",
+    "Kills soft-bodied insects like aphids on contact, so spray right onto the colonies and the leaf undersides.",
+    "Breaks down quickly and leaves little residue on fruit you harvest every week.",
+  ],
+  where: "Any palengke, sari-sari store or grocery: plain bar laundry soap.",
+  image: PESTICIDE_PHOTOS.laundrySoap,
+};
+
+const OREGANO_EXTRACT: Pesticide = {
+  name: "Oregano leaf extract",
+  type: "Organic",
+  note: "Crush fresh oregano leaves in water (a starting point is a cupful per liter), strain, and spray on aphid colonies and leaf undersides. There is no official dose, so test on a few leaves first. Best for light infestations.",
+  why: [
+    "A UPLB study found a crude oregano extract effective against black bean aphids on stringbeans.",
+    "Oregano (Plectranthus amboinicus) is a common household herb: easy to buy in the palengke or grow in a pot.",
+    "Plant-based, so it is a good choice for light infestations or when you want to avoid chemicals close to harvest.",
+  ],
+  where: "Palengke (wet market) or your own backyard.",
+  image: PESTICIDE_PHOTOS.oregano,
+};
+
+const LANGKAWAS_EXTRACT: Pesticide = {
+  name: "Langkawas (galangal) extract",
+  type: "Organic",
+  note: "Pound fresh langkawas rhizome in water (a starting point is about 100 g per liter), strain, and spray the plants and leaf undersides. There is no official dose, so test on a few leaves first and re-spray after rain.",
+  why: [
+    "In UPLB trials, a langkawas water extract killed 100% of eggplant flea beetles, the highest control among the plant extracts tested.",
+    "Sold fresh in any palengke, so you don't need to go to an agri-vet store.",
+    "Plant-based and cheap, with no synthetic chemical residue on fruit you harvest every week.",
+  ],
+  where: "Palengke (wet market): fresh langkawas rhizome.",
+  image: PESTICIDE_PHOTOS.langkawas,
+};
+
+const CYPERMETHRIN: Pesticide = {
+  name: "Cypermethrin",
+  type: "Chemical",
+  note: "Last resort. Use only a product whose label lists eggplant, and follow its dose and pre-harvest interval. Spray in the evening, and only when beetles are damaging seedlings or young plants.",
+  why: [
+    "A pyrethroid insecticide widely sold in agri-vet stores; a UPLB residue study found cypermethrin among the insecticides sprayed on eggplant farms in Pangasinan.",
+    "Acts quickly on contact, which suits flea beetles that jump from plant to plant.",
+    "Use it sparingly: it also kills ladybirds and other helpful insects, and it is toxic to bees and fish, so keep it away from ponds and flowering plants.",
+  ],
+  where: "Agri-vet stores. Check that the label lists eggplant and shows an FPA registration number.",
+  image: PESTICIDE_PHOTOS.cypermethrin,
+};
+
+const PREVATHON: Pesticide = {
+  name: "Chlorantraniliprole",
+  type: "Chemical",
+  brand: "Prevathon® 5SC (FMC)",
+  note: "10 ml per 16 L of water (500 ml/ha), every 5–7 days. Best in the vegetative stage, or alternated with other products during fruiting. Pre-harvest interval 1 day; re-enter once the spray has dried.",
+  why: [
+    "Registered in the Philippines for eggplant fruit and shoot borer (and cutworm).",
+    "FMC reports that larvae stop feeding within about 7 minutes and stay protected for up to 14 days.",
+    "Green label (FPA toxicity category 4, the lowest hazard class), and described by FMC as generally safe to beneficial insects.",
+    "Rainfast: the spray stays on the plant if it rains 2–4 hours later.",
+    "Different group (28) from spinosad (5), so you can alternate the two to slow down resistance.",
+  ],
+  where: "Agri-vet stores. Made by FMC; FPA Reg. No. 598-393-4410.",
+  image: PESTICIDE_PHOTOS.chlorantraniliprole,
+};
+
+const BENEVIA: Pesticide = {
+  name: "Cyantraniliprole",
+  type: "Chemical",
+  brand: "Benevia® (FMC)",
+  note: "30–40 ml per 16 L of water (1 L/ha), every 7 days. Best in the vegetative stage, or alternated with other products during fruiting. Maximum 2 sprays back-to-back, then switch to a different chemistry. Pre-harvest interval 1 day; re-enter after 12 hours.",
+  why: [
+    "Registered in the Philippines for eggplant. The label lists aphids, thrips and fruit and shoot borer, so one product covers the main pests.",
+    "Systemic: it moves through the leaf, which helps against sucking pests such as aphids and thrips.",
+    "FMC reports that insects stop feeding within about 7 minutes and stay protected for up to 14 days.",
+    "Green label (FPA toxicity category 4, the lowest hazard class), and the spray stays on the plant if it rains 2–4 hours later.",
+    "Helps limit plant viruses spread by aphids and thrips.",
+  ],
+  where: "Agri-vet stores. Made by FMC; FPA Reg. No. 598-485-4577.",
+  image: PESTICIDE_PHOTOS.cyantraniliprole,
+};
+
+const SUCCESS: Pesticide = {
+  name: "Spinosad",
+  type: "Biological",
+  brand: "Success® (Corteva)",
+  note: "Use the rate and pre-harvest interval printed on the label. Spray in the evening, when bees are not active, and alternate with a different insecticide group.",
+  why: [
+    "Corteva's Philippine product page lists eggplant, with thrips and the eggplant fruit and shoot borer among the target pests.",
+    "Made from a naturally occurring soil bacterium (per Corteva), so it is a more natural option than most insecticides.",
+    "Different group (5) from Benevia and Prevathon (28): use it to rotate and slow down resistance.",
+  ],
+  where: "Agri-vet stores. 250 mL pack, made by Corteva Agriscience.",
+  image: PESTICIDE_PHOTOS.spinosad,
 };
 
 export const PESTS: Record<string, PestInfo> = {
@@ -87,16 +268,15 @@ export const PESTS: Record<string, PestInfo> = {
       "Ants moving up and down the plant",
     ],
     pesticides: [
-      { name: "Neem oil (azadirachtin)", type: "Organic", note: "≈5 ml/L water + a few drops of liquid soap. Spray leaf undersides every 5–7 days." },
-      { name: "Insecticidal soap", type: "Organic", note: "≈2% solution. Must contact the insects directly to work." },
-      { name: "Beauveria bassiana", type: "Biological", note: "Fungal bio-insecticide; apply in the evening when humid." },
-      { name: "Flonicamid or Acetamiprid", type: "Chemical", note: "Use only for heavy infestations, at label rate. Rotate modes of action." },
+      SOAP_SPRAY,
+      OREGANO_EXTRACT,
+      BENEVIA,
     ],
     treatment: [
       "Blast colonies off with a strong jet of water.",
       "Prune and destroy heavily infested shoots.",
-      "Spray neem oil or insecticidal soap, covering leaf undersides.",
-      "Escalate to a selective chemical only if populations keep rising after 2 sprays.",
+      "Spray laundry soap solution or oregano extract, covering leaf undersides.",
+      "If aphids keep increasing after 2 sprays, use cyantraniliprole (Benevia) once, following the label.",
     ],
     prevention: [
       "Encourage ladybirds, lacewings and parasitic wasps.",
@@ -160,16 +340,14 @@ export const PESTS: Record<string, PestInfo> = {
       "Stunted or wilting seedlings",
     ],
     pesticides: [
-      { name: "Neem oil", type: "Organic", note: "Acts as a repellent and feeding deterrent; reapply after rain." },
-      { name: "Kaolin clay", type: "Organic", note: "Coats leaves with a protective film that deters feeding." },
-      { name: "Spinosad", type: "Biological", note: "Effective on beetles; spray in the evening to protect bees." },
-      { name: "Pyrethrins or Lambda-cyhalothrin", type: "Chemical", note: "For severe outbreaks only, at label rate. Highly toxic to bees and fish." },
+      LANGKAWAS_EXTRACT,
+      CYPERMETHRIN,
     ],
     treatment: [
-      "Cover young plants with floating row covers until flowering.",
+      "Cover young plants with net or floating row covers until flowering.",
       "Use yellow sticky traps near affected plants.",
-      "Apply neem or kaolin clay to protect foliage.",
-      "Spray spinosad if damage exceeds roughly 20–30% of leaf area on young plants.",
+      "Spray langkawas extract to protect young plants.",
+      "Use cypermethrin only if damage exceeds roughly 20–30% of leaf area on young plants.",
     ],
     prevention: [
       "Transplant sturdy, older seedlings that tolerate feeding.",
@@ -234,16 +412,15 @@ export const PESTS: Record<string, PestInfo> = {
       "Pinkish-white caterpillars inside shoots or fruit",
     ],
     pesticides: [
-      { name: "Bacillus thuringiensis (Bt var. kurstaki)", type: "Biological", note: "Spray on young larvae before they bore in; repeat every 7 days." },
-      { name: "Neem seed kernel extract (5%)", type: "Organic", note: "Deters egg-laying; best as a preventive spray." },
-      { name: "Emamectin benzoate", type: "Chemical", note: "Effective on larvae. Follow label rate and pre-harvest interval." },
-      { name: "Chlorantraniliprole", type: "Chemical", note: "Long-lasting larval control; rotate with other groups to avoid resistance." },
+      PREVATHON,
+      BENEVIA,
+      SUCCESS,
     ],
     treatment: [
       "Cut and destroy wilted shoots and bored fruit weekly — burn or bury deep, never compost.",
       "Install pheromone traps (~100/ha) to capture male moths.",
-      "Spray Bt or neem at the first sign of damage.",
-      "Use emamectin benzoate or chlorantraniliprole for heavy infestation, respecting the pre-harvest interval.",
+      "Spray chlorantraniliprole (Prevathon) or cyantraniliprole (Benevia) at the first sign of damage.",
+      "Alternate with spinosad (Success) so the borer doesn't become resistant, and respect the pre-harvest interval.",
     ],
     prevention: [
       "Use insect-proof netting in nurseries.",
@@ -309,16 +486,14 @@ export const PESTS: Record<string, PestInfo> = {
       "Scarred, rough patches on fruit skin",
     ],
     pesticides: [
-      { name: "Neem oil", type: "Organic", note: "Spray every 5–7 days, covering growing tips and flowers." },
-      { name: "Spinosad / Spinetoram", type: "Biological", note: "Among the most effective options for thrips. Spray in the evening." },
-      { name: "Beauveria bassiana", type: "Biological", note: "Bio-insecticide; works best in humid conditions." },
-      { name: "Abamectin or Cyantraniliprole", type: "Chemical", note: "For severe infestations, at label rate. Rotate modes of action." },
+      SUCCESS,
+      BENEVIA,
     ],
     treatment: [
       "Hang blue sticky traps to monitor and reduce adults.",
       "Remove heavily damaged leaves and weeds nearby.",
-      "Spray spinosad or neem, targeting buds, flowers and leaf undersides.",
-      "Repeat 2–3 times at 5–7 day intervals to break the life cycle.",
+      "Spray spinosad (Success) or cyantraniliprole (Benevia), targeting buds, flowers and leaf undersides.",
+      "Follow the label interval and rotate between products to break the life cycle.",
     ],
     prevention: [
       "Use reflective silver mulch to repel adults.",
@@ -326,13 +501,13 @@ export const PESTS: Record<string, PestInfo> = {
       "Encourage predatory mites and minute pirate bugs.",
     ],
   },
-  healthy_fruit: {
-    label: "healthy_fruit",
-    name: "Healthy Fruit",
+  healthy: {
+    label: "healthy",
+    name: "Healthy Plant",
     healthy: true,
     severity: "none",
-    summary: "No pest damage detected on this fruit. Keep monitoring regularly.",
-    symptoms: ["Glossy, firm skin", "No holes, scars or frass", "Uniform colour"],
+    summary: "No pest damage detected on this plant or fruit. Keep monitoring regularly.",
+    symptoms: ["Upright, vigorous growth", "Glossy, firm fruit with no holes, scars or frass", "No wilting shoot tips"],
     pesticides: [],
     treatment: ["No treatment needed."],
     prevention: [
