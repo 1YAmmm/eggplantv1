@@ -81,6 +81,25 @@ and `mistral-medium-latest` are blocked on Mistral's free plan, so Mistral is on
 
 Run the checks for the AI logic with `npm test` (no network needed).
 
+## ESP32-CAM as a photo source
+
+Under the camera buttons the user picks **Phone camera** or **ESP32 camera**. An ESP32-CAM cannot be reached from a
+phone's browser (the site is HTTPS, the camera is not), so it **uploads its photos to this server** and the phone
+fetches them from there. This works on Android and iPhone. Both the camera and the phone need internet; a phone hotspot
+(2.4 GHz) is fine for the camera. The on-device pest model is unchanged: the photo just arrives as a canvas.
+
+- The camera calls `POST /api/cam/device` (a heartbeat every ~10 s while idle, a small preview about once a second
+  while a phone is looking, one bigger photo for **Capture**). The answer tells it what to send next.
+- The phone calls `GET /api/cam/frame` for the live preview and `POST` / `GET /api/cam/capture` for the Capture photo.
+- Photos wait about a minute in **Upstash Redis** (free; Vercel > Storage / Marketplace sets `KV_REST_API_URL` and
+  `KV_REST_API_TOKEN`, and `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` work too). `npm run dev` without them
+  keeps photos in memory instead.
+- `ESP32_CAM_CODES` lists the camera codes that may use the relay (16 to 128 characters, comma-separated); the same code
+  goes into the camera's setup page and into the app on the phone. Without it the routes answer 503, and unknown codes get 401.
+- The camera has no settings in its code: its own setup page (a Wi-Fi called `EggplantCam-xxxx`, opened from a phone) holds
+  the Wi-Fi networks, the site address and the camera code, so changing them needs no computer.
+- Flashing, wiring and troubleshooting: [`firmware/esp32cam-wifi/README.md`](firmware/esp32cam-wifi/README.md).
+
 ## Structure
 
 - `public/model/` — `eggplant_model_float16.tflite` (MobileNetV3, from `ml/scripts/export_to_tflite.py`) and `class_names.json`
@@ -94,7 +113,9 @@ Run the checks for the AI logic with `npm test` (no network needed).
 - `src/lib/ai/providers.ts` — the AI providers and models for chat, photo second opinion and treatment plan, with retries and fallback
 - `src/lib/assist.ts`, `src/lib/secondOpinion.ts`, `src/app/api/recognize/route.ts` — the photo second opinion (decision logic, browser side, server side)
 - `src/lib/advice.ts`, `src/lib/useAdvice.ts`, `src/app/api/advice/route.ts` — the suggested treatment plan (prompt and checker, browser side, server side)
-- `tests/` — `npm test` runs the unit tests for `assist.ts`, `recognize.ts` and `advice.ts`
+- `src/lib/camRelay.ts`, `src/lib/camStore.ts`, `src/lib/camRoute.ts`, `src/app/api/cam/` — the ESP32-CAM relay (rules, storage, shared route helpers, the three routes); `src/lib/useEsp32Camera.ts`, `src/lib/camPrefs.ts` and `src/components/SourcePicker.tsx` — the phone side
+- `firmware/esp32cam-wifi/` — the Arduino sketch for the ESP32-CAM
+- `tests/` — `npm test` runs the unit tests for `assist.ts`, `recognize.ts`, `advice.ts` and the camera relay (`camRelay.ts`, `camStore.ts`)
 
 To update the model, copy the new `.tflite` and `class_names.json` from `ml/models/tflite/` into `public/model/`.
 The model must take `[1, 224, 224, 3]` float32 (ImageNet-normalised) and output one logit per class.

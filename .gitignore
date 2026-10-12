@@ -46,3 +46,6 @@ next-env.d.ts
 
 # LiteRT.js runtime, copied from node_modules on install
 /public/litert/
+
+# ESP32-CAM firmware settings: Wi-Fi passwords and the camera code
+/firmware/**/config.h

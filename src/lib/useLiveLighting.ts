@@ -7,8 +7,17 @@ const INTERVAL_MS = 500;
 /** A reading must repeat this many times in a row before the hint changes, so it does not flicker. */
 const STABLE_READINGS = 2;
 
+/** The preview is either the phone's video or, for the ESP32 camera, a canvas the latest photo is drawn on. */
+function previewWidth(el: HTMLVideoElement | HTMLCanvasElement): number {
+  if (el instanceof HTMLVideoElement) return el.paused ? 0 : el.videoWidth;
+  return el.width;
+}
+
 /** Watches the live camera preview and reports whether the light is too dark or too bright. */
-export function useLiveLighting(videoRef: RefObject<HTMLVideoElement | null>, active: boolean): Lighting {
+export function useLiveLighting(
+  previewRef: RefObject<HTMLVideoElement | HTMLCanvasElement | null>,
+  active: boolean,
+): Lighting {
   const [lighting, setLighting] = useState<Lighting>("ok");
 
   useEffect(() => {
@@ -22,9 +31,9 @@ export function useLiveLighting(videoRef: RefObject<HTMLVideoElement | null>, ac
     let last: Lighting = "ok";
     let streak = 0;
     const timer = setInterval(() => {
-      const video = videoRef.current;
-      if (!video || !video.videoWidth || video.paused) return;
-      ctx.drawImage(video, 0, 0, SAMPLE_SIZE, SAMPLE_SIZE);
+      const preview = previewRef.current;
+      if (!preview || !previewWidth(preview)) return;
+      ctx.drawImage(preview, 0, 0, SAMPLE_SIZE, SAMPLE_SIZE);
       const reading = checkLighting(ctx.getImageData(0, 0, SAMPLE_SIZE, SAMPLE_SIZE).data);
       streak = reading === last ? streak + 1 : 1;
       last = reading;
@@ -35,7 +44,7 @@ export function useLiveLighting(videoRef: RefObject<HTMLVideoElement | null>, ac
       clearInterval(timer);
       setLighting("ok");
     };
-  }, [videoRef, active]);
+  }, [previewRef, active]);
 
   return active ? lighting : "ok";
 }
