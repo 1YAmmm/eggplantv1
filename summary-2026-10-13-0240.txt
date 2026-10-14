@@ -1,0 +1,139 @@
+SUMMARY NG GINAWA - ESP32-CAM bilang photo source ng EggplantCare
+Petsa at oras ng pagsulat: 2026-10-13 02:40 (Martes), UTC+08:00
+Saklaw ng trabaho: gabi ng 2026-10-12 hanggang 2026-10-13 02:40
+(Walang sikreto sa file na ito: wala ang camera code at ang Wi-Fi password.)
+
+======================================================================
+1. LAYUNIN
+======================================================================
+Pagpipilian sa app: "Phone camera" o "ESP32 camera" bilang pinagkukunan ng litrato.
+Dapat gumana sa Android at iPhone, at kaya ng camera ang sarili nitong Wi-Fi/internet.
+Desisyon: Wi-Fi "cloud relay". Hindi diretso ang phone sa camera. Parehong kumokonekta
+sa server sa Vercel (HTTPS), kaya walang problema sa mixed-content at gumagana sa iPhone.
+(Hindi pinili: Bluetooth, dahil walang Web Bluetooth sa iPhone.)
+
+======================================================================
+2. ANG NAGAWA
+======================================================================
+A. Server (Next.js, sa src/app/api/cam/)
+   - POST /api/cam/device     : ang camera. Heartbeat tuwing ~10 s kapag walang tumitingin;
+                                 preview tuwing ~1 s kapag may tumitingin; capture kapag pinindot.
+                                 Ang sagot ay nagsasabi kung ano ang ipapadala sa susunod.
+   - GET  /api/cam/frame      : ang phone, para sa live preview.
+   - POST/GET /api/cam/capture: ang Capture button at ang pagkuha ng litrato nito (hiwalay para
+                                 hindi mapalitan ng sumunod na preview).
+   - Seguridad: allowlist ng camera codes (ESP32_CAM_CODES), rate limit, tseke ng laki at
+     JPEG, 401 sa maling code, 503 kapag hindi naka-set up.
+   - Imbakan: Upstash Redis (mga litratong nabubura sa loob ng ~1 minuto). Tinatanggap ang
+     KV_REST_API_URL / KV_REST_API_TOKEN (ang ginagamit ng Vercel integration) at ang
+     UPSTASH_REDIS_REST_*. Hindi ginagamit ang read-only token. In-memory sa npm run dev.
+   - Mga bagong lib: src/lib/camRelay.ts, camStore.ts, camRoute.ts.
+
+B. App sa phone
+   - src/components/SourcePicker.tsx : switch na Phone camera | ESP32 camera at lagayan ng code.
+   - src/lib/useEsp32Camera.ts       : preview loop, capture, offline/error na mensahe.
+   - src/lib/camPrefs.ts             : natatandaan ang pinili at ang code sa phone.
+   - src/components/Scanner.tsx, src/lib/useLiveLighting.ts: isinama ang ESP32 (canvas viewfinder).
+   - Walang binago sa model o sa /api/recognize.
+   - Bug na nahuli sa testing at naayos: ipinapakita noon ang lumang preview bilang "live"
+     kahit patay na ang camera.
+
+C. Firmware (firmware/esp32cam-wifi/ at kopya sa Documents\Arduino\esp32camera)
+   - Dynamic na setup: walang Wi-Fi/URL/code sa code. Ang camera ay gumagawa ng sarili nitong
+     Wi-Fi na "EggplantCam-xxxx" at setup page. Ise-save sa flash memory ng camera.
+     Bumabalik sa setup mode kapag: walang naka-save, hindi maka-Wi-Fi ng ~90 s, RST ng
+     3 beses, o "setup" sa Serial Monitor ("forget" para burahin).
+   - HTTPS na may pagsusuri ng certificate (GTS Root R1 at ISRG Root X1; na-verify laban sa
+     totoong chain ng *.vercel.app).
+   - Mga pagbabago para sa linaw (ngayong gabi):
+       * preview VGA 640x480 (dating QVGA), capture XGA 1024x768 (dating SVGA)
+       * ayos ng frame buffer: mag-init sa UXGA para hindi mag-"cam_hal: FB-OVF"
+       * camera clock 10 MHz (dating 20 MHz), retry ng camera init na may power-cycle ng sensor
+       * mga setting ng sensor (white balance, exposure, gain, lens correction, atbp.)
+       * flash LED bilang ilaw: off / capture lang / habang may tumitingin. May pagpipilian sa
+         setup page ("Light"). Nakalagay sa config.h mo bilang panimula: 2 (dim na kwarto).
+   - Naayos na bug sa unang bersyon: hindi nagko-compile sa ESP32 core 3.x dahil sa pangalang
+     "Network". (Compatible pa rin sa lumang config.h.)
+
+D. Docs
+   - firmware/esp32cam-wifi/README.md (buong gabay at troubleshooting), README.md (bagong seksyon),
+     .env.example (ESP32_CAM_CODES, Upstash), .gitignore (config.h ng firmware).
+
+E. Deployment
+   - Na-deploy ko ang site sa production gamit ang `vercel --prod` (2026-10-12 gabi).
+   - Nag-commit/push ka ng "feat: implement ESP32-CAM relay functionality" (22:39).
+   - Upstash Redis na-connect sa Vercel project (Production at Preview).
+
+======================================================================
+3. NA-VERIFY
+======================================================================
+- 31 tests pasado (npm test), tsc at lint ng src/tests malinis, npm run build pasado.
+- Mga route sa totoong Vercel: heartbeat, preview, capture, byte-for-byte na paglilipat ng
+  litrato sa Upstash, 401/503 na mga kaso.
+- Web app sa totoong Chrome (gamit ang simulated na camera): preview, capture hanggang result
+  card, offline na mensahe, awtomatikong recovery, maling code.
+- Firmware: nagko-compile nang walang error/warning (ESP32 core 3.3.12, 38% ng program space).
+- TOTOONG CAMERA (AI-Thinker + CAM-MB, COM10): nag-upload ako at nabasa ko ang Serial output.
+  Nakakonekta sa home Wi-Fi, "Clock: set", Mode: preview, mga ~46 na preview kada 60 s,
+  capture na 1024x768 ay dumarating sa loob ng ~2-4 s. Natatandaan ng camera ang settings
+  kahit mag-upload ulit.
+
+======================================================================
+4. HINDI PA NASUBUKAN
+======================================================================
+- Ang setup page at 3x RST mula sa phone (hindi ko magawa mula dito).
+- Ang app sa totoong iPhone at Android na gumagamit ng camera.
+- Hotspot ng phone bilang Wi-Fi ng camera.
+- Larawan ng totoong talong sa tamang layo at naka-focus na lens, at ang aktuwal na detection.
+- Mga lint error sa `eslint .` ay nasa public/litert/*.js (gawa-gawang file, hindi sa akin).
+
+======================================================================
+5. MGA NATUKLASAN SA HARDWARE (mahalaga para sa "malabo")
+======================================================================
+- Ang pipeline ay gumagana; ang kalidad ng larawan ay nakadepende sa pisikal na bagay.
+- Ang huling larawan ay malapitang tela/balahibo na LABAS SA FOCUS. Ang lens ay walang
+  autofocus, kaya:
+    1) ilayo ang camera sa bagay (15-30 cm),
+    2) dahan-dahang paikutin ang lens barrel habang nakatingin sa preview hanggang pinakamalinaw,
+    3) tanggalin ang plastik na pelikula sa lens kung meron,
+    4) magdagdag ng ilaw o gamitin ang flash LED setting.
+- Mga naunang larawan ay madilim na may pahalang na guhit: sintomas ng kulang na ilaw at/o
+  mahinang power o maluwag na camera ribbon. May "SCCB_Write Failed" minsan sa unang boot.
+  Gumamit ng 5V 2A charger/power bank na maikli at makapal ang cable.
+- Hawak ng Arduino Serial Monitor ang COM10 at maaaring i-reset o ibitin ang board. Pagkatapos
+  gamitin, isara ito at pindutin ang RST nang isang beses.
+
+======================================================================
+6. MGA PAGBABAGO SA LABAS NG PROJECT
+======================================================================
+- C:\Users\laman\AppData\Local\Arduino15\packages\esp32\hardware\esp32\3.3.12\boards.local.txt
+  (idinagdag ko): ginawang 115200 ang upload speed ng AI Thinker ESP32-CAM. Naayos nito ang
+  "Unable to verify flash chip connection". Burahin ang file para ibalik sa 460800.
+- Documents\Arduino\esp32camera\: pinalitan ko ang esp32camera.ino at config.h (ang luma mong
+  config ay naka-save bilang config.h.old). Naroon pa rin ang mga stock file ng CameraWebServer
+  (app_httpd.cpp, camera_index.h, atbp.). Hindi nila sinisira ang build pero hindi kailangan.
+- Ang camera sa COM10 ay naka-flash na ng pinakabagong firmware.
+
+======================================================================
+7. KALAGAYAN NG GIT
+======================================================================
+- Na-commit/push na: ang relay, app, at unang bersyon ng firmware (commit 5044898).
+- HINDI pa naka-commit (mga pagbabago ko ngayong gabi): firmware/esp32cam-wifi/esp32cam-wifi.ino,
+  config.example.h, README.md (firmware), cam.txt, config.txt, at ang file na ito.
+- Walang camera code o Wi-Fi password sa git o sa history.
+
+======================================================================
+8. SUSUNOD NA GAGAWIN MO
+======================================================================
+1. Tiyaking may sapat na power ang camera (5V 2A) at nakaupo nang husto ang ribbon.
+2. Itapat sa dahon o bunga ng talong, 15-30 cm ang layo, at paikutin ang lens hanggang malinaw
+   sa preview ng app.
+3. Subukan ang app sa phone: ESP32 camera -> ilagay ang camera code -> Scan -> Capture.
+4. Kung gusto mong may flash LED lang kapag nagca-capture o patay, pindutin ang RST ng 3 beses
+   at baguhin ang "Light" sa setup page.
+5. I-commit at i-push ang firmware at docs kapag ayos na (`git add firmware cam.txt config.txt`).
+6. Opsyonal: palitan ang camera code kung nailagay mo ito sa usapan na maaaring makita ng iba
+   (Vercel ESP32_CAM_CODES + setup page ng camera).
+
+Mga ideya sa hinaharap (hindi ginawa): sharpness meter sa app para gabayan ang pag-focus;
+flash button sa app na kumokontrol sa LED; pairing ng camera nang walang Vercel env var.
