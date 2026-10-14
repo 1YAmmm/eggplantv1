@@ -21,7 +21,8 @@ export const ONLINE_WINDOW_MS = 10_000;
 
 /** Told to the camera in `nextMs`: how long to wait before its next request. */
 export const IDLE_POLL_MS = 10_000;
-export const PREVIEW_POLL_MS = 500;
+/** The camera's wait between two preview photos. Its own upload takes longer than this on a slow link, so it rarely idles. */
+export const PREVIEW_POLL_MS = 300;
 
 /** A preview is a few KB and a capture about 60 KB; anything much bigger is not from the camera. */
 export const MAX_FRAME_BYTES = 300_000;
@@ -30,8 +31,19 @@ export const MAX_CODE_LENGTH = 128;
 
 export type FrameKind = "preview" | "capture";
 
-/** What the camera should send in its next request. A capture carries the id the phone is waiting for. */
-export type Want = { mode: "idle" | "preview" } | { mode: "capture"; id: string };
+/**
+ * What the camera should send in its next request. A capture carries the id the phone is waiting for. `flash` is the
+ * phone's choice for the white LED; without it the camera keeps to the setting saved on the camera itself.
+ */
+export type Want = { mode: "idle" | "preview"; flash?: "on" | "off" } | { mode: "capture"; id: string; flash?: "on" | "off" };
+
+/** The phone's choice for the camera's white LED: "auto" means "no choice, use the camera's own setting". */
+export type FlashChoice = "auto" | "on" | "off";
+
+/** The `flash` query of a phone request. Anything else counts as "auto", so a typo can never switch the LED. */
+export function parseFlash(value: string | null): FlashChoice {
+  return value === "on" || value === "off" ? value : "auto";
+}
 
 /**
  * Codes are typed on a phone and sent in an HTTP header, so only URL-safe characters are allowed. At least

@@ -11,6 +11,7 @@ import {
   nextDelayMs,
   parseAfter,
   parseCodes,
+  parseFlash,
   parseKind,
 } from "../src/lib/camRelay.ts";
 import { createCamStore, createMemoryExec, createUpstashExec, upstashFromEnv } from "../src/lib/camStore.ts";
@@ -127,6 +128,65 @@ test("store: a preview reaches the phone once, and expires", async () => {
   assert.equal((await store.pollPreview("cam", second.seq)).online, false);
   advance(60);
   assert.deepEqual(await store.pollPreview("cam", second.seq), { status: "none", online: false });
+});
+
+test("parseFlash: only an explicit on/off counts, anything else is auto", () => {
+  assert.equal(parseFlash("on"), "on");
+  assert.equal(parseFlash("off"), "off");
+  assert.equal(parseFlash("auto"), "auto");
+  assert.equal(parseFlash(null), "auto");
+  assert.equal(parseFlash("ON"), "auto");
+  assert.equal(parseFlash("1"), "auto");
+  assert.equal(parseFlash("on; drop"), "auto");
+});
+
+test("store: the phone's flash choice reaches the camera while the phone looks, and ends with it", async () => {
+  const { store, advance } = makeStore();
+  await store.pollPreview("cam", 0, "on");
+  assert.deepEqual(await store.deviceTick("cam", null), { mode: "preview", flash: "on" });
+  await store.pollPreview("cam", 0, "off");
+  assert.deepEqual(await store.deviceTick("cam", null), { mode: "preview", flash: "off" });
+  // "auto" (and a poll that does not say) leaves the choice to the camera's own setting: no flash field at all.
+  await store.pollPreview("cam", 0, "auto");
+  assert.deepEqual(await store.deviceTick("cam", null), { mode: "preview" });
+  await store.pollPreview("cam", 0);
+  assert.deepEqual(await store.deviceTick("cam", null), { mode: "preview" });
+  // The choice dies with "someone is looking".
+  await store.pollPreview("cam", 0, "on");
+  advance(16);
+  assert.deepEqual(await store.deviceTick("cam", null), { mode: "idle" });
+});
+
+test("store: a Capture carries the phone's flash choice", async () => {
+  const { store } = makeStore();
+  const id = await store.requestCapture("cam", "on");
+  assert.deepEqual(await store.deviceTick("cam", null), { mode: "capture", id, flash: "on" });
+  assert.deepEqual(await store.deviceTick("cam", { kind: "capture", id, jpeg: "FULL" }), { mode: "preview", flash: "on" });
+  const plain = await store.requestCapture("cam");
+  assert.deepEqual(await store.deviceTick("cam", null), { mode: "capture", id: plain });
+});
+
+test("store: the camera reports whether its LED is lit, and the phone sees it with each poll", async () => {
+  const { store, advance } = makeStore();
+  await store.pollPreview("cam", 0);
+  // A camera that does not report (older firmware) leaves the field out.
+  await store.deviceTick("cam", { kind: "preview", jpeg: "AAAA" });
+  const unknown = await store.pollPreview("cam", 0);
+  assert.equal(unknown.status, "frame");
+  assert.equal("flash" in unknown, false);
+
+  advance(1);
+  await store.deviceTick("cam", { kind: "preview", jpeg: "BBBB", flash: true });
+  const lit = await store.pollPreview("cam", 0);
+  assert.equal(lit.status, "frame");
+  assert.equal(lit.flash, true);
+  // Also on a poll that has nothing new to send, so the phone's button keeps up.
+  const same = await store.pollPreview("cam", lit.seq);
+  assert.deepEqual(same, { status: "same", online: true, flash: true });
+
+  advance(1);
+  await store.deviceTick("cam", { kind: "preview", jpeg: "CCCC", flash: false });
+  assert.equal((await store.pollPreview("cam", lit.seq)).flash, false);
 });
 
 test("store: Capture is asked once, answered with its own id, and then finished", async () => {

@@ -30,6 +30,7 @@
 #include <time.h>
 
 #include "esp_camera.h"
+#include "esp_sntp.h"
 
 /* Arduino-ESP32 3.x has its own global called `Network`. The first version of config.h in this project declared
  * `struct Network` (a Wi-Fi list that is no longer used); renaming it here lets such an old file still compile. */
@@ -67,11 +68,29 @@
 #endif
 
 // ---- Photo sizes. JPEG quality is 0-63: LOWER means better quality and a bigger file. ----
-// The app squeezes every photo to 224x224 for the pest model, so these are for looking at and for the AI second opinion.
-static const framesize_t PREVIEW_SIZE = FRAMESIZE_QVGA;  // 320x240, a few KB: only for aiming
-static const int PREVIEW_QUALITY = 15;
-static const framesize_t CAPTURE_SIZE = FRAMESIZE_SVGA;  // 800x600, roughly 40-70 KB
-static const int CAPTURE_QUALITY = 12;
+// The app squeezes every photo to 224x224 for the pest model, but small pests (aphids, thrips) only survive that if the
+// photo is sharp to begin with, and the AI second opinion looks at the photo at about 768 px. So the preview is big enough
+// to judge focus by eye, and the capture is bigger still. Both are 4:3 so the preview shows exactly what the capture will.
+// Measured on a real board: a VGA preview is 12-15 KB at quality 14 and about the same at 20, and its upload takes ~0.95 s
+// either way. The time is the round trip to the server, not the size, so a rougher picture buys nothing: keep it sharp
+// enough to focus the lens by eye. The Serial Monitor prints "camera X ms + upload Y ms" to check this again.
+static const framesize_t PREVIEW_SIZE = FRAMESIZE_VGA;  // 640x480: for aiming and for focusing the lens
+static const int PREVIEW_QUALITY = 14;
+static const framesize_t CAPTURE_SIZE = FRAMESIZE_XGA;  // 1024x768, roughly 60-150 KB
+static const int CAPTURE_QUALITY = 10;
+
+/** The clock given to the camera sensor. 10 MHz is plenty for about one photo a second and, on many boards, gives a
+ *  cleaner picture than the usual 20 MHz (less electrical noise, so fewer streaks). Override it in config.h. */
+#ifndef CAMERA_XCLK_HZ
+#define CAMERA_XCLK_HZ 10000000
+#endif
+
+/** The bright white LED next to the lens, as a light for dim rooms: 0 = never, 1 = only while a Capture photo is taken,
+ *  2 = the whole time the camera is sending photos (so the preview is lit too). This is only the starting value: the
+ *  setup page has a "Light" choice that is saved in the camera and wins. */
+#ifndef CAMERA_FLASH_MODE
+#define CAMERA_FLASH_MODE 0
+#endif
 
 /** Wait this long between requests until the server says otherwise. */
 static const uint32_t DEFAULT_WAIT_MS = 10000;
@@ -99,6 +118,7 @@ struct Settings {
   String pass[2];
   String url;   // the site, no trailing slash
   String code;  // the camera code
+  int flash;    // the white LED as a light: 0 never, 1 only for the Capture photo, 2 whenever a phone is looking
 };
 
 static Settings cfg;
@@ -151,6 +171,8 @@ static bool loadSettings() {
   cfg.pass[1] = prefs.getString("pass2", "");
   cfg.url = prefs.getString("url", DEFAULT_URL);
   cfg.code = prefs.getString("code", "");
+  cfg.flash = prefs.getUChar("flash", CAMERA_FLASH_MODE);
+  if (cfg.flash < 0 || cfg.flash > 2) cfg.flash = 0;
   return cfg.ssid[0].length() > 0 && validUrl(cfg.url) && validCode(cfg.code);
 }
 
@@ -161,6 +183,7 @@ static void saveSettings() {
   prefs.putString("pass2", cfg.pass[1]);
   prefs.putString("url", cfg.url);
   prefs.putString("code", cfg.code);
+  prefs.putUChar("flash", (uint8_t)cfg.flash);
 }
 
 /** Counts power-ups. Returns true on the third one in a row that came within the reset window. */
@@ -270,7 +293,19 @@ static String setupPage(const String &message) {
   h += esc(draftUrl.length() ? draftUrl : cfg.url);
   h += F("'><label>Camera code</label><input name='code' autocapitalize='none' autocomplete='off' placeholder='");
   h += validCode(cfg.code) ? F("saved - leave empty to keep it") : F("16 or more letters and numbers");
-  h += F("'></fieldset><button type='submit'>Save and restart</button></form>"
+  h += F("'></fieldset><fieldset><legend>Light</legend><label>The white LED next to the lens</label><select name='flash'>");
+  const char *const flashChoices[3] = {"Off (daylight, outdoors)", "Only when the Capture photo is taken",
+                                       "On whenever a phone is looking (dim rooms)"};
+  for (int i = 0; i < 3; i++) {
+    h += F("<option value='");
+    h += String(i);
+    h += '\'';
+    if (i == cfg.flash) h += F(" selected");
+    h += '>';
+    h += flashChoices[i];
+    h += F("</option>");
+  }
+  h += F("</select></fieldset><button type='submit'>Save and restart</button></form>"
          "<p><small>Use the same camera code as ESP32_CAM_CODES on the site. The camera only supports 2.4 GHz Wi-Fi.</small></p>"
          "</main></body></html>");
   return h;
@@ -314,6 +349,8 @@ static void handleSave() {
   cfg.pass[1] = ssid[1].length() ? pass[1] : String("");
   cfg.url = url;
   cfg.code = code;
+  const int flash = portalServer.arg("flash").toInt();
+  cfg.flash = flash >= 0 && flash <= 2 ? flash : 0;
   saveSettings();
   portalServer.send(200, "text/html",
                     "<!doctype html><meta name='viewport' content='width=device-width,initial-scale=1'>"
@@ -407,6 +444,65 @@ static void checkSerialCommands() {
 // Camera
 // ---------------------------------------------------------------------------------------------------------------
 
+/** Throws away frames that were captured with the old size or before the exposure had settled. */
+static void discardFrames(int count) {
+  for (int i = 0; i < count; i++) {
+    camera_fb_t *frame = esp_camera_fb_get();
+    if (frame) esp_camera_fb_return(frame);
+  }
+}
+
+/** Extra time the sensor gets to re-adjust its exposure after it switches to the bigger Capture size, on top of throwing
+ *  4 frames away. 0 = no extra wait. If your Capture photos come out darker than the live picture, try 1500: the
+ *  Serial Monitor then prints how many frames were thrown away. (Not measured on this board yet: two cameras were
+ *  sharing one camera code while this was tested, so the Capture photos could not be told apart.) */
+#ifndef CAPTURE_SETTLE_MS
+#define CAPTURE_SETTLE_MS 0
+#endif
+
+/** Throws frames away until at least `minFrames` are gone AND `ms` have passed, so the exposure can settle. */
+static void settleFrames(uint32_t ms, int minFrames) {
+  const uint32_t started = millis();
+  int i = 0;
+  for (; (i < minFrames || millis() - started < ms) && i < 60; i++) {
+    camera_fb_t *frame = esp_camera_fb_get();
+    if (frame) esp_camera_fb_return(frame);
+  }
+  Serial.printf("Exposure: %d frames thrown away in %lu ms before the Capture photo\n", i, (unsigned long)(millis() - started));
+}
+
+static bool flashOn = false;
+/** The phone's choice for the white LED, from the server's answer: 1 on, 0 off, -1 no choice (use the saved Light setting). */
+static int appFlash = -1;
+
+/** Switches the bright white LED next to the lens. After it comes on, the first frames are thrown away so the sensor's
+ *  automatic exposure can adapt to the light. */
+static void setFlash(bool on) {
+  if (on == flashOn) return;
+  digitalWrite(FLASH_LED_GPIO_NUM, on ? HIGH : LOW);
+  flashOn = on;
+  Serial.printf("Flash LED: %s\n", on ? "on" : "off");
+  if (on) discardFrames(3);
+}
+
+/** Sensor settings for clear photos of plants. Each call is skipped when this sensor does not support it. */
+static void tuneSensor(sensor_t *s) {
+  if (s->set_whitebal) s->set_whitebal(s, 1);        // automatic white balance: leaves stay green, not blue or orange
+  if (s->set_awb_gain) s->set_awb_gain(s, 1);
+  if (s->set_exposure_ctrl) s->set_exposure_ctrl(s, 1);
+  if (s->set_aec2) s->set_aec2(s, 1);                // the sensor's own dim-light exposure helper
+  if (s->set_gain_ctrl) s->set_gain_ctrl(s, 1);
+  if (s->set_gainceiling) s->set_gainceiling(s, GAINCEILING_8X);  // brighter in a dim room, with a little more noise
+  if (s->set_ae_level) s->set_ae_level(s, 1);        // aim a little brighter than the default
+  if (s->set_lenc) s->set_lenc(s, 1);                // correct the darker corners of the lens
+  if (s->set_bpc) s->set_bpc(s, 1);                  // hide dead pixels
+  if (s->set_wpc) s->set_wpc(s, 1);
+  if (s->set_raw_gma) s->set_raw_gma(s, 1);
+  if (s->set_dcw) s->set_dcw(s, 1);
+  if (s->set_sharpness) s->set_sharpness(s, 1);      // not supported by every sensor; ignored when it is not
+  if (s->set_denoise) s->set_denoise(s, 1);
+}
+
 static bool startCamera() {
   camera_config_t config = {};
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -427,7 +523,7 @@ static bool startCamera() {
   config.pin_sccb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 20000000;
+  config.xclk_freq_hz = CAMERA_XCLK_HZ;
   config.pixel_format = PIXFORMAT_JPEG;
   config.frame_size = PREVIEW_SIZE;
   config.jpeg_quality = PREVIEW_QUALITY;
@@ -436,21 +532,43 @@ static bool startCamera() {
   if (psramFound()) {
     config.fb_count = 2;
     config.fb_location = CAMERA_FB_IN_PSRAM;
+    // The frame buffers are sized when the camera starts. Start at the biggest size so the bigger Capture photo fits
+    // (otherwise the driver reports "FB-OVF" and the photo is damaged), then drop to the preview size below.
+    config.frame_size = FRAMESIZE_UXGA;
+    config.jpeg_quality = CAPTURE_QUALITY;
   } else {
     Serial.println("WARNING: no PSRAM found. Check that Tools > Board is \"AI Thinker ESP32-CAM\". Captures may fail.");
     config.fb_count = 1;
     config.fb_location = CAMERA_FB_IN_DRAM;
   }
 
-  const esp_err_t err = esp_camera_init(&config);
-  if (err != ESP_OK) {
-    Serial.printf("Camera init failed: 0x%x\n", err);
-    return false;
+  // The sensor sometimes does not answer on the first try (a weak power supply or a loose ribbon shows up here as
+  // "SCCB_Write Failed"). Cut its power for a moment and try again before giving up.
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    const esp_err_t err = esp_camera_init(&config);
+    if (err == ESP_OK) {
+      sensor_t *sensor = esp_camera_sensor_get();
+      if (sensor) {
+        tuneSensor(sensor);
+        sensor->set_framesize(sensor, PREVIEW_SIZE);
+        sensor->set_quality(sensor, PREVIEW_QUALITY);
+      }
+      sizedFor = MODE_PREVIEW;
+      discardFrames(3);  // the first frames are dark while the exposure settles
+      return true;
+    }
+    Serial.printf("Camera init failed (try %d of 3): 0x%x\n", attempt, err);
+    esp_camera_deinit();
+    pinMode(PWDN_GPIO_NUM, OUTPUT);
+    digitalWrite(PWDN_GPIO_NUM, HIGH);
+    delay(300);
+    digitalWrite(PWDN_GPIO_NUM, LOW);
+    delay(300);
   }
-  return true;
+  return false;
 }
 
-/** Switches the sensor between the small preview size and the bigger capture size. */
+/** Switches the sensor between the preview size and the bigger capture size. */
 static void useSize(Mode mode) {
   if (mode == MODE_IDLE || mode == sizedFor) return;
   sensor_t *sensor = esp_camera_sensor_get();
@@ -458,11 +576,10 @@ static void useSize(Mode mode) {
   sensor->set_framesize(sensor, mode == MODE_CAPTURE ? CAPTURE_SIZE : PREVIEW_SIZE);
   sensor->set_quality(sensor, mode == MODE_CAPTURE ? CAPTURE_QUALITY : PREVIEW_QUALITY);
   sizedFor = mode;
-  // Frames already waiting in the buffers still have the old size: throw them away.
-  for (int i = 0; i < 2; i++) {
-    camera_fb_t *old = esp_camera_fb_get();
-    if (old) esp_camera_fb_return(old);
-  }
+  // Frames already waiting have the old size, and the first ones at a new size are underexposed: throw them away. The
+  // Capture photo is the one that matters, so it gets time for the exposure to settle (see CAPTURE_SETTLE_MS).
+  if (mode == MODE_CAPTURE) settleFrames(CAPTURE_SETTLE_MS, 4);
+  else discardFrames(4);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -470,27 +587,179 @@ static void useSize(Mode mode) {
 // ---------------------------------------------------------------------------------------------------------------
 
 /** HTTPS needs the real date to check the server's certificate; a fresh ESP32 thinks it is 1970. */
+static bool clockIsSet() {
+  return time(nullptr) >= 1700000000;
+}
+
 static void syncClock() {
   configTime(0, 0, "pool.ntp.org", "time.google.com");
   const uint32_t started = millis();
-  while (time(nullptr) < 1700000000 && millis() - started < 20000) delay(250);
-  Serial.println(time(nullptr) < 1700000000 ? "Clock: not set (HTTPS will probably fail)" : "Clock: set");
+  while (!clockIsSet() && millis() - started < 20000) delay(250);
+  if (clockIsSet()) {
+    Serial.println("Clock: set");
+    return;
+  }
+  Serial.println("Clock: not set (HTTPS will probably fail)");
+  // Stop asking. A time lookup left half-finished makes the camera crash ("Required to lock TCPIP core") the first time
+  // the HTTPS client looks up the site's name, and it reboots. loop() tries again later.
+  esp_sntp_stop();
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Wi-Fi diagnostics: say WHY the camera cannot join, not only "connecting..."
+// ---------------------------------------------------------------------------------------------------------------
+
+static volatile uint8_t lastWifiReason = 0;  // why the Wi-Fi driver last refused or dropped a connection (0 = nothing yet)
+static volatile bool wifiReasonIsNew = false;
+
+/** Runs on the Wi-Fi driver's own task, so it only remembers the reason: the main loop prints it. */
+static void onWifiEvent(arduino_event_id_t event, arduino_event_info_t info) {
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    lastWifiReason = info.wifi_sta_disconnected.reason;
+    wifiReasonIsNew = true;
+  }
+}
+
+/** The driver's reason code in words a person can act on. */
+static const char *wifiReasonText(uint8_t reason) {
+  switch (reason) {
+    case WIFI_REASON_NO_AP_FOUND:
+    case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+    case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+    case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:
+      return "the router was not found: too far away, 5 GHz only, or the name is not typed exactly right";
+    case WIFI_REASON_AUTH_FAIL:
+    case WIFI_REASON_MIC_FAILURE:
+    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_HANDSHAKE_TIMEOUT:
+    case WIFI_REASON_GROUP_KEY_UPDATE_TIMEOUT:
+      return "the router did not accept the password: most likely a wrong password (a very weak signal can do this too)";
+    case WIFI_REASON_AUTH_EXPIRE:
+    case WIFI_REASON_BEACON_TIMEOUT:
+    case WIFI_REASON_TIMEOUT:
+      return "the router stopped answering: the signal is too weak or the router is too far away";
+    case WIFI_REASON_ASSOC_TOOMANY:
+    case WIFI_REASON_ASSOC_FAIL:
+      return "the router refused the camera: it may be full, or it has a device filter (MAC filter) turned on";
+    case WIFI_REASON_AKMP_INVALID:
+    case WIFI_REASON_CIPHER_SUITE_REJECTED:
+    case WIFI_REASON_GROUP_CIPHER_INVALID:
+    case WIFI_REASON_PAIRWISE_CIPHER_INVALID:
+    case WIFI_REASON_BAD_CIPHER_OR_AKM:
+    case WIFI_REASON_UNSUPP_RSN_IE_VERSION:
+    case WIFI_REASON_IE_IN_4WAY_DIFFERS:
+      return "the router uses a security type the camera does not support: set the router to WPA2";
+    case WIFI_REASON_AUTH_LEAVE:
+    case WIFI_REASON_ASSOC_LEAVE:
+    case WIFI_REASON_AP_INITIATED:
+    case WIFI_REASON_UNSPECIFIED:
+      return "the router disconnected the camera";
+    default:
+      return "reason not in this list: look the code up in the ESP-IDF 'wifi_err_reason_t' list";
+  }
+}
+
+static const char *wifiSecurityText(wifi_auth_mode_t mode) {
+  switch (mode) {
+    case WIFI_AUTH_OPEN: return "open";
+    case WIFI_AUTH_WEP: return "WEP";
+    case WIFI_AUTH_WPA_PSK: return "WPA";
+    case WIFI_AUTH_WPA2_PSK: return "WPA2";
+    case WIFI_AUTH_WPA_WPA2_PSK: return "WPA/WPA2";
+    case WIFI_AUTH_WPA3_PSK: return "WPA3 only";
+    case WIFI_AUTH_WPA2_WPA3_PSK: return "WPA2/WPA3";
+    default: return "other";
+  }
+}
+
+/** Lists the saved network names (never the passwords), then every 2.4 GHz network the camera can see, and marks the saved
+ *  ones. This is what answers "is my router in range, and is its name typed exactly like this?". */
+static void reportWifiScan() {
+  for (int i = 0; i < 2; i++) {
+    if (cfg.ssid[i].length() == 0) continue;
+    Serial.printf("Wi-Fi: saved network %d is \"%s\" (%u characters), password %u characters\n", i + 1, cfg.ssid[i].c_str(),
+                  (unsigned)cfg.ssid[i].length(), (unsigned)cfg.pass[i].length());
+    if (cfg.pass[i].length() > 0 && cfg.pass[i].length() < 8) {
+      Serial.println("  A Wi-Fi password is at least 8 characters, so this one cannot be right.");
+    }
+  }
+
+  const int count = WiFi.scanNetworks();
+  if (count < 0) {
+    Serial.printf("Wi-Fi: the scan for networks failed (code %d), so the camera cannot look for your router.\n", count);
+    WiFi.scanDelete();
+    return;
+  }
+  Serial.printf("Wi-Fi: the camera sees %d network(s) on 2.4 GHz%s\n", count,
+                count == 0 ? ". None at all: check the power supply, the antenna side of the board and the distance to the router." : ":");
+
+  bool seen[2] = {false, false};
+  bool sameNameOtherCase[2] = {false, false};
+  int shown = 0;
+  for (int i = 0; i < count; i++) {
+    const String name = WiFi.SSID(i);
+    bool saved = false;
+    for (int s = 0; s < 2; s++) {
+      if (cfg.ssid[s].length() == 0) continue;
+      if (name == cfg.ssid[s]) {
+        saved = true;
+        seen[s] = true;
+      } else if (name.equalsIgnoreCase(cfg.ssid[s])) {
+        sameNameOtherCase[s] = true;
+      }
+    }
+    if (shown < 15 || saved) {  // the strongest 15, plus a saved network wherever it is in the list
+      Serial.printf("  %-32s channel %2d  %4d dBm  %s%s\n", name.length() ? name.c_str() : "(hidden network)", (int)WiFi.channel(i),
+                    (int)WiFi.RSSI(i), wifiSecurityText(WiFi.encryptionType(i)), saved ? "   <== SAVED" : "");
+      shown++;
+    }
+  }
+  WiFi.scanDelete();
+
+  for (int s = 0; s < 2; s++) {
+    if (cfg.ssid[s].length() == 0 || seen[s]) continue;
+    Serial.printf("Wi-Fi: saved network \"%s\" was NOT seen. ", cfg.ssid[s].c_str());
+    if (sameNameOtherCase[s]) {
+      Serial.println("A network with the same name but different capital letters is there: the name must match exactly.");
+    } else {
+      Serial.println("It is out of range, 5 GHz only, switched off, or hidden (the camera may not be able to join a hidden network).");
+    }
+  }
 }
 
 /** Joins a saved network. After `giveUpMs` without success it opens the setup page so the networks can be changed. */
 static void connectWifi(uint32_t giveUpMs) {
   if (WiFi.status() == WL_CONNECTED) return;
   Serial.println("Wi-Fi: connecting...");
+  lastWifiReason = 0;
+  wifiReasonIsNew = false;
+  reportWifiScan();
+
   const uint32_t started = millis();
+  uint32_t lastStatus = started;
+  uint8_t lastPrintedReason = 0;
+  // WiFiMulti.run() returns at once while it scans or when no saved name is in range, so wait a moment between calls.
   while (wifiMulti.run(15000) != WL_CONNECTED) {
-    Serial.print('.');
     closeResetWindow();
-    if (millis() - started > giveUpMs) {
-      Serial.println("\nWi-Fi: could not join any saved network.");
+    const uint32_t now = millis();
+    if (wifiReasonIsNew && lastWifiReason != lastPrintedReason) {
+      lastPrintedReason = lastWifiReason;
+      Serial.printf("Wi-Fi: not connected, code %u: %s\n", (unsigned)lastPrintedReason, wifiReasonText(lastPrintedReason));
+    }
+    wifiReasonIsNew = false;
+    if (now - lastStatus >= 10000) {
+      lastStatus = now;
+      Serial.printf("Wi-Fi: still trying (%lu s)%s\n", (unsigned long)((now - started) / 1000),
+                    lastPrintedReason == 0 ? ", no answer from any router yet" : "");
+    }
+    if (now - started > giveUpMs) {
+      Serial.println("Wi-Fi: could not join any saved network.");
+      if (lastWifiReason != 0) Serial.printf("  Last answer, code %u: %s\n", (unsigned)lastWifiReason, wifiReasonText(lastWifiReason));
       runSetupPortal("cannot reach the saved Wi-Fi", true);
     }
+    delay(100);
   }
-  Serial.printf("\nWi-Fi: connected to \"%s\", IP %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+  Serial.printf("Wi-Fi: connected to \"%s\", IP %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
   if (useTls) syncClock();
 }
 
@@ -519,6 +788,7 @@ static int post(camera_fb_t *fb, String &answer) {
   int status;
   if (fb) {
     http.addHeader("x-frame-kind", want == MODE_CAPTURE ? "capture" : "preview");
+    http.addHeader("x-flash", flashOn ? "1" : "0");  // lets the app's Flash button show whether the LED is really lit
     if (want == MODE_CAPTURE) http.addHeader("x-capture-id", captureId);
     http.addHeader("Content-Type", "image/jpeg");
     status = http.POST(fb->buf, fb->len);
@@ -533,11 +803,17 @@ static int post(camera_fb_t *fb, String &answer) {
 /** Sends what the server last asked for, then reads what it wants next. Returns false when the request failed. */
 static bool exchange() {
   camera_fb_t *fb = nullptr;
+  uint32_t prepareMs = 0;  // switching size / LED, then waiting for a fresh frame: the camera's share of the delay
   if (want != MODE_IDLE) {
+    const uint32_t prepareStarted = millis();
+    // The app's Flash button wins; without it, the Light setting saved on the setup page decides.
+    setFlash(appFlash >= 0 ? appFlash == 1 : (cfg.flash == 2 || (cfg.flash == 1 && want == MODE_CAPTURE)));
     useSize(want);
     fb = esp_camera_fb_get();
+    prepareMs = millis() - prepareStarted;
     if (!fb) Serial.println("Camera: no frame, sending a heartbeat instead");
   } else {
+    setFlash(false);
     // A heartbeat every 10 s outlives the server's idle connection timeout: start each one fresh.
     secureClient.stop();
     plainClient.stop();
@@ -565,13 +841,16 @@ static bool exchange() {
   }
 
   if (sent == MODE_CAPTURE) {
-    Serial.printf("Capture sent: %u bytes in %lu ms\n", (unsigned)photoBytes, (unsigned long)(millis() - started));
-  } else if (sent == MODE_PREVIEW && ++previewsSent % 10 == 1) {
-    Serial.printf("Preview sent: %u bytes in %lu ms (every 10th is logged)\n", (unsigned)photoBytes,
+    Serial.printf("Capture sent: %u bytes, camera %lu ms + upload %lu ms\n", (unsigned)photoBytes, (unsigned long)prepareMs,
                   (unsigned long)(millis() - started));
+  } else if (sent == MODE_PREVIEW && ++previewsSent % 10 == 1) {
+    Serial.printf("Preview sent: %u bytes, camera %lu ms + upload %lu ms (every 10th is logged)\n", (unsigned)photoBytes,
+                  (unsigned long)prepareMs, (unsigned long)(millis() - started));
   }
 
   const String next = jsonString(answer, "want");
+  const String appChoice = jsonString(answer, "flash");  // absent unless the phone pressed the Flash button
+  appFlash = appChoice == "on" ? 1 : appChoice == "off" ? 0 : -1;
   const Mode before = want;
   want = next == "preview" ? MODE_PREVIEW : next == "capture" ? MODE_CAPTURE : MODE_IDLE;
   captureId = want == MODE_CAPTURE ? jsonString(answer, "id") : "";
@@ -619,12 +898,13 @@ void setup() {
   http.setReuse(true);
   http.setTimeout(15000);
 
+  WiFi.onEvent(onWifiEvent);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   for (int i = 0; i < 2; i++) {
     if (cfg.ssid[i].length() > 0) wifiMulti.addAP(cfg.ssid[i].c_str(), cfg.pass[i].length() > 0 ? cfg.pass[i].c_str() : nullptr);
   }
-  Serial.printf("Site: %s\n", cfg.url.c_str());
+  Serial.printf("Site: %s | flash LED: %s\n", cfg.url.c_str(), cfg.flash == 2 ? "on while a phone is looking" : cfg.flash == 1 ? "only for Capture" : "off");
   connectWifi(BOOT_WIFI_WAIT_MS);
 }
 
@@ -632,6 +912,16 @@ void loop() {
   closeResetWindow();
   checkSerialCommands();
   connectWifi(LATER_WIFI_WAIT_MS);
+
+#ifdef HAS_ROOT_CA
+  // The certificate check needs the real date. If the first try failed (the network blocked time servers for a while),
+  // try again about once a minute.
+  static uint32_t lastClockTry = 0;
+  if (useTls && !clockIsSet() && millis() - lastClockTry > 60000) {
+    lastClockTry = millis();
+    syncClock();
+  }
+#endif
 
   const uint32_t started = millis();
   if (exchange()) {

@@ -25,7 +25,9 @@ export async function POST(request: Request) {
 
     const jpeg = Buffer.from(bytes).toString("base64");
     if (kind === "preview") {
-      frame = { kind, jpeg };
+      // The camera says whether its white LED is lit, so the app's Flash button can show the truth.
+      const lit = request.headers.get("x-flash");
+      frame = lit === "1" || lit === "0" ? { kind, jpeg, flash: lit === "1" } : { kind, jpeg };
     } else {
       const id = request.headers.get("x-capture-id");
       if (!isCaptureId(id)) return fail("Invalid capture id.", 400);
@@ -36,7 +38,7 @@ export async function POST(request: Request) {
   try {
     const want = await store.deviceTick(access.cam, frame);
     const id = want.mode === "capture" ? want.id : undefined;
-    return Response.json({ want: want.mode, id, nextMs: nextDelayMs(want) }, { headers: NO_STORE });
+    return Response.json({ want: want.mode, id, flash: want.flash, nextMs: nextDelayMs(want) }, { headers: NO_STORE });
   } catch (err) {
     console.error("[cam] device request failed:", err instanceof Error ? err.message : err);
     return fail("The camera relay is unavailable right now.", 503);

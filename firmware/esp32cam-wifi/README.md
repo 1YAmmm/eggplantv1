@@ -8,9 +8,12 @@ photo when the phone presses **Capture**. It works with Android and iPhone becau
 from your phone, and the camera remembers them. To change the Wi-Fi later (new router, moving to the farm) you do not
 need a computer or a new upload.
 
-> **Status:** the server and the app were tested end to end with a simulated camera, and this sketch **compiles** for the
-> AI Thinker ESP32-CAM with Arduino-ESP32 3.3.12 (no errors, no warnings). It has **not been run on a real ESP32-CAM
-> yet**: expect to tune the photo sizes and fix small things in the first session.
+> **Status:** this sketch compiles for the AI Thinker ESP32-CAM with Arduino-ESP32 3.3.12 (no errors, no warnings) and has
+> been **run on a real AI-Thinker ESP32-CAM on a CAM-MB**: it joined a home Wi-Fi, kept its settings across uploads and
+> restarts, and sent a preview (about one photo a second) and a Capture photo (arriving in about 2-4 s) to the site on
+> Vercel, which the relay returned byte for byte. Not tried yet: the setup page and 3x RST from a phone, an iPhone or
+> Android phone using the app with it, the Wi-Fi of a phone hotspot, and photos of a real eggplant at a good distance with
+> the lens focused.
 
 ## What you need
 
@@ -53,7 +56,12 @@ The first time (nothing saved yet) the camera makes its own Wi-Fi and the small 
    a 5 GHz network by mistake) and type its password. A second network is optional: add your phone's hotspot there and the
    camera uses whichever it finds. A hidden network: leave the list on "not in the list" and type its name.
 3. Type the **site address** (for example `https://your-app.vercel.app`) and the **camera code** from step 1.
-4. Tap **Save and restart**. Your phone goes back to its normal Wi-Fi. The Serial Monitor (115200 baud) shows the Wi-Fi
+4. Under **Light**, choose what the bright white LED next to the lens does: **off** (daylight, outdoors), **only when the
+   Capture photo is taken**, or **on whenever a phone is looking** (dim rooms; the preview is lit too). This is the camera's
+   own default: while the scanner is open, the app's **Flash** button (top of the viewfinder) switches the LED on or off and
+   wins, for the Capture photo too. It shows whether the LED is really lit, as the camera reports it. When the scanner is
+   closed, the camera goes back to this setting.
+5. Tap **Save and restart**. Your phone goes back to its normal Wi-Fi. The Serial Monitor (115200 baud) shows the Wi-Fi
    connection, "Clock: set" and then `Mode: preview` as soon as a phone opens the scanner.
 
 ### Opening the setup page again
@@ -84,15 +92,39 @@ field. Weak USB ports and long thin cables are the usual cause of random reboots
   saved camera code or Wi-Fi password. The settings are stored in the camera's flash memory in plain text, as they would be
   in code, so someone who holds the camera and a computer could read them: keep the camera code secret and change it (in
   the setup page and in `ESP32_CAM_CODES`) if you lose a camera.
-- **Data use:** while previewing through a phone hotspot, about 70 MB per hour (photos go up from the camera and down
-  to the phone). Nothing is sent while nobody is scanning except a tiny heartbeat every 10 s.
+- **Data use:** a preview photo is about 12-25 KB and the camera sends roughly one a second (measured: 46 in 60 s), so
+  while previewing through a phone hotspot expect about 100 MB per hour (photos go up from the camera and down to the
+  phone). A Capture photo is about 35-100 KB, once. Nothing is sent while nobody is scanning except a tiny heartbeat every
+  10 s.
+- **Lag in the live picture:** the picture you see is a photo that went camera -> server -> database -> phone, so it is always
+  1-3 s old and moves about once a second. Most of that time is distance: the Serial Monitor prints
+  `Preview sent: ... camera X ms + upload Y ms`, and **Y** is the round trip to the server. If Y stays above about 600 ms,
+  check that the site's functions run near you and that the Upstash database is in the same area (see the main README, "Speed
+  depends on where the server runs"). Y near 150-300 ms feels live. Measured with the server in Washington DC: a 12-15 KB
+  preview took about 0.95 s to upload, and making the photo rougher did not make it faster, so the photo size is not the
+  problem.
 - **Free plan:** the idle heartbeat is about 1 Upstash command every 10 s, so about 260,000 a month if the camera is
   left powered 24/7 (the free plan allows 500,000). Switch it off when you are not using it.
 - **Privacy:** photos wait on your server for about a minute and are not logged or kept. The camera code decides who
   can see them.
-- **Focus:** the lens is fixed-focus. Twist the lens ring by hand until a leaf about 15 to 30 cm away is sharp.
-- **Photo sizes:** `PREVIEW_SIZE` / `CAPTURE_SIZE` and the two quality numbers are at the top of the sketch. Higher
-  quality numbers mean smaller, rougher photos. The pest model only looks at 224x224 pixels, so bigger is rarely needed.
+- **Getting a clear photo (this matters more than any setting):** the lens has **no autofocus**. A blurry picture almost
+  always means one of these:
+  1. **Too close.** Keep the leaf or fruit about 15 to 30 cm from the lens; at 5 cm nothing can be sharp.
+  2. **Focus ring.** Hold the board still and slowly twist the lens barrel by hand (a drop of rubber or tape helps if it is
+     stiff) while watching the preview in the app, until a leaf at your working distance is sharp. Stop when it is sharpest.
+  3. **Film on the lens.** New modules often have a thin plastic film over the lens: peel it off.
+  4. **Light.** Dim rooms mean a long exposure (blur) and grain. Use daylight, or set **Light** to *on whenever a phone is
+     looking* on the setup page to use the white LED. Very close to a shiny leaf the LED can glare: then choose *only for
+     Capture* or *off*.
+  5. **Power or loose ribbon.** Horizontal coloured streaks, or `SCCB_Write Failed` at start-up, point to a weak power
+     supply or a camera ribbon that is not fully seated (lift the black clip, push the ribbon in, press the clip down).
+- **Photo sizes:** `PREVIEW_SIZE` (VGA 640x480) and `CAPTURE_SIZE` (XGA 1024x768) with their quality numbers are at the top
+  of the sketch; both are 4:3, so the preview shows what the capture will show. Higher quality numbers mean smaller,
+  rougher photos. The pest model looks at 224x224 pixels, but small pests (aphids, thrips) only survive that downscale if
+  the photo is sharp, and the AI second opinion looks at the photo at about 768 px.
+- **Sensor clock:** `CAMERA_XCLK_HZ` defaults to 10 MHz (less electrical noise than 20 MHz, plenty for one photo a second).
+  The frame buffers are reserved for the biggest size at start-up; without that the driver prints `cam_hal: FB-OVF` and
+  large photos are damaged.
 - **Old `config.h`:** an earlier version of this project kept the Wi-Fi list and camera code in `config.h`. Those lines are
   now ignored (the old file still compiles). Replace it with the new `config.example.h` when convenient.
 
@@ -112,10 +144,14 @@ field. Weak USB ports and long thin cables are the usual cause of random reboots
 | The setup page does not open by itself | Open `http://192.168.4.1` in the phone's browser. Some phones keep using mobile data: turn it off for a moment. |
 | `Brownout detector was triggered`, reboot loops | Weak power. Use a better cable/charger/power bank. Last resort: uncomment `DISABLE_BROWNOUT_DETECTOR` in `config.h`. |
 | `Camera init failed: 0x105` / `0x20001` | Board seated badly, or the wrong board selected. Reseat it and check Tools > Board is "AI Thinker ESP32-CAM". |
-| `Wi-Fi: connecting...` then setup mode opens | Wrong password, a 5 GHz-only network, or (iPhone hotspot) "Maximize Compatibility" is off. |
-| `Clock: not set` then `Connection failed` | No internet on that Wi-Fi, or NTP is blocked. HTTPS needs the real time. |
+| `Wi-Fi: connecting...` then setup mode opens | Wrong password, a 5 GHz-only network, or (iPhone hotspot) "Maximize Compatibility" is off. The Serial Monitor now says which (next three rows). |
+| `Wi-Fi: saved network "x" was NOT seen` | The camera's scan (listed just above, strongest first, your saved one marked `<== SAVED`) does not contain your network: it is out of range, 5 GHz only, switched off or hidden, or the name differs (capital letters and spaces count). Pick it from the list on the setup page instead of typing it. |
+| `Wi-Fi: not connected, code 202 ...` (or 15, 204) | The router was found but refused the password. Retype it on the setup page. Code 201 means the router was not found, 200 or 2 a signal too weak, 203 or 5 the router refused the camera (full, or a MAC filter). |
+| `Wi-Fi: the camera sees 0 network(s)` | Nothing in range, or a power or antenna problem. Move closer to the router and use a better supply. |
+| `Clock: not set` then `Connection failed` | No internet on that Wi-Fi, or NTP is blocked. HTTPS needs the real time. The camera stops its time lookup and tries again about once a minute (an earlier version crashed with `Required to lock TCPIP core` and rebooted here). |
 | `Connection failed: connection refused` with HTTPS | The site's certificate does not chain to the roots in `config.h` (custom domain with another CA). Add that CA's root certificate. |
 | `Server: wrong camera code` | The code in the setup page differs from `ESP32_CAM_CODES` on the site, or the site was not redeployed. Press RST 3 times and fix it. |
 | `Server: ... relay is not set up` | `ESP32_CAM_CODES` or Upstash is missing on the site. |
+| The picture jumps between two different views, the Flash button does not match the LED, or the camera never goes idle | **Two cameras (or a test program) are using the same camera code**, so their photos mix on the server and a Capture is answered by whichever asks first. Switch one of them off, or give each its own code (`ESP32_CAM_CODES` takes several, comma-separated, and each camera's setup page holds its own). To check: put one camera in setup mode (type `setup` in the Serial Monitor); if photos keep arriving in the app, another one is sending. |
 | App stays on "Waking the camera..." | The camera is off, not on Wi-Fi, or the codes differ. Check the Serial Monitor. |
 | Photos are dark, green or blurry | Wait a second after a size change, add light, twist the lens to focus. |

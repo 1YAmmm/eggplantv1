@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import type { FlashChoice } from "./camRelay";
 
 /*
  * The phone's side of the ESP32-CAM relay (see /api/cam/*). While `active`, it fetches the newest preview photo about
@@ -8,14 +9,18 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from "react"
 
 export type CamState = "idle" | "waking" | "live" | "offline" | "error";
 
-const POLL_MS = 700;
+/** While a Capture is under way: the request is reaching the camera, then its full-size photo is coming back. */
+export type CapturePhase = "asking" | "receiving";
+
+/** Pause between preview polls. The camera sends about one photo a second, so polling this often keeps the picture fresh. */
+const POLL_MS = 300;
 const BACKOFF_MS = 3_000;
 /** A sleeping camera wakes within its ~10 s heartbeat; allow for the first upload as well. */
 const WAKE_TIMEOUT_MS = 25_000;
 /** Previews arrive about once a second, so a long gap means the camera has stopped. */
 const STALE_AFTER_MS = 8_000;
 const CAPTURE_TIMEOUT_MS = 15_000;
-const CAPTURE_POLL_MS = 500;
+const CAPTURE_POLL_MS = 300;
 
 const NO_CAMERA = "The camera is not connected.";
 const NO_NETWORK = "Can't reach the server. Check your internet connection.";
@@ -68,12 +73,29 @@ async function drawPhoto(res: Response, canvas: HTMLCanvasElement) {
   bitmap.close();
 }
 
-export function useEsp32Camera(code: string, active: boolean, canvasRef: RefObject<HTMLCanvasElement | null>) {
+/**
+ * `flash` is the user's choice for the camera's white LED: "on" / "off", or "auto" to leave it to the camera's own
+ * setting. It rides along with every poll, so the camera follows within about a second.
+ */
+export function useEsp32Camera(
+  code: string,
+  active: boolean,
+  canvasRef: RefObject<HTMLCanvasElement | null>,
+  flash: FlashChoice = "auto",
+) {
   const [state, setState] = useState<CamState>("waking");
   const [message, setMessage] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
+  const [capturePhase, setCapturePhase] = useState<CapturePhase>("asking");
+  /** Whether the camera's white LED is really lit, as the camera reports it; null until it has said. */
+  const [cameraFlash, setCameraFlash] = useState<boolean | null>(null);
   /** Lets `capture()` stop with the preview loop when the scanner is closed. */
   const abortRef = useRef<AbortController | null>(null);
+  /** The latest flash choice, read by the polling loop without restarting it every time the user taps the button. */
+  const flashRef = useRef(flash);
+  useEffect(() => {
+    flashRef.current = flash;
+  }, [flash]);
 
   useEffect(() => {
     if (!active) return;
@@ -102,8 +124,10 @@ export function useEsp32Camera(code: string, active: boolean, canvasRef: RefObje
 
         let pause = POLL_MS;
         try {
-          const res = await fetch(`/api/cam/frame?after=${after}`, { headers, cache: "no-store", signal });
+          const res = await fetch(`/api/cam/frame?after=${after}&flash=${flashRef.current}`, { headers, cache: "no-store", signal });
           failures = 0;
+          const lit = res.headers.get("x-camera-flash");
+          if (lit !== null) setCameraFlash(lit === "1");
           if (res.status === 200) {
             after = Number(res.headers.get("x-frame-seq")) || after;
             // The server keeps the last preview for a minute. If the camera has since gone quiet, that photo is
@@ -152,6 +176,7 @@ export function useEsp32Camera(code: string, active: boolean, canvasRef: RefObje
       abortRef.current = null;
       setState("waking");
       setMessage(null);
+      setCameraFlash(null);
     };
   }, [active, code, canvasRef]);
 
@@ -161,11 +186,13 @@ export function useEsp32Camera(code: string, active: boolean, canvasRef: RefObje
     if (!signal || signal.aborted) throw new Error(NO_CAMERA);
     const headers = { "x-cam-code": code };
 
+    setCapturePhase("asking");
     setCapturing(true);
     try {
-      const asked = await fetch("/api/cam/capture", { method: "POST", headers, cache: "no-store", signal });
+      const asked = await fetch(`/api/cam/capture?flash=${flashRef.current}`, { method: "POST", headers, cache: "no-store", signal });
       if (!asked.ok) throw new Error(failure(asked));
       const { id } = (await asked.json()) as { id: string };
+      setCapturePhase("receiving");
 
       const deadline = Date.now() + CAPTURE_TIMEOUT_MS;
       while (Date.now() < deadline && !signal.aborted) {
@@ -190,5 +217,12 @@ export function useEsp32Camera(code: string, active: boolean, canvasRef: RefObje
     }
   }, [code]);
 
-  return { state: active ? state : ("idle" as CamState), message: active ? message : null, capturing, capture };
+  return {
+    state: active ? state : ("idle" as CamState),
+    message: active ? message : null,
+    capturing,
+    capturePhase,
+    cameraFlash: active ? cameraFlash : null,
+    capture,
+  };
 }

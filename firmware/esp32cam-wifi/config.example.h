@@ -17,6 +17,14 @@
  * supply. It hides the symptom, it does not fix the cause (see README.md, Troubleshooting). */
 // #define DISABLE_BROWNOUT_DETECTOR
 
+/* The bright white LED next to the lens as a light for dim rooms: 0 = never (default), 1 = only while the Capture photo is
+ * taken, 2 = the whole time a phone is looking. The setup page has the same choice; once saved there it wins over this. */
+// #define CAMERA_FLASH_MODE 0
+
+/* The clock given to the camera sensor. 10 MHz (default) is plenty for one photo a second and is less sensitive to
+ * electrical noise than the usual 20 MHz. Try 20000000 only if the picture is fine and you want a higher frame rate. */
+// #define CAMERA_XCLK_HZ 10000000
+
 /* Root certificates the site's HTTPS certificate must chain to. They let the camera check that it is really talking to
  * your site (otherwise anyone on the same Wi-Fi could read your camera code). These two cover *.vercel.app (Google
  * Trust Services, GTS Root R1) and custom domains that use Let's Encrypt (ISRG Root X1). Delete the definition of

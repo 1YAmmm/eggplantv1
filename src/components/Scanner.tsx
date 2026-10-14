@@ -3,13 +3,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { applyOpinion, needsSecondOpinion, type Opinion } from "@/lib/assist";
 import { useCamPrefs } from "@/lib/camPrefs";
-import { isWellFormedCode } from "@/lib/camRelay";
+import { isWellFormedCode, type FlashChoice } from "@/lib/camRelay";
 import type { Lighting } from "@/lib/lighting";
 import { classify, loadModel, type Diagnosis } from "@/lib/model";
 import { askSecondOpinion, ASSIST_MODE } from "@/lib/secondOpinion";
 import { useEsp32Camera } from "@/lib/useEsp32Camera";
 import { useLiveLighting } from "@/lib/useLiveLighting";
 import AnalysingOverlay from "./AnalysingOverlay";
+import CapturingOverlay from "./CapturingOverlay";
 import ChatBox from "./ChatBox";
 import LightingNotice from "./LightingNotice";
 import ResultCard from "./ResultCard";
@@ -59,8 +60,12 @@ export default function Scanner() {
   /** Where the photo comes from, and the code that pairs this phone with its ESP32 camera (both remembered). */
   const { source, code: camCode, setSource, setCode: setCamCode } = useCamPrefs();
   const esp32CanvasRef = useRef<HTMLCanvasElement>(null);
+  /** The user's choice for the ESP32 camera's white LED. "auto" leaves it to the camera's own setting. */
+  const [esp32Flash, setEsp32Flash] = useState<FlashChoice>("auto");
   /** The ESP32 camera's photos reach the phone through the server; this draws them on `esp32CanvasRef` while scanning. */
-  const esp32 = useEsp32Camera(camCode, status === "camera" && source === "esp32", esp32CanvasRef);
+  const esp32 = useEsp32Camera(camCode, status === "camera" && source === "esp32", esp32CanvasRef, esp32Flash);
+  /** What the button shows: the user's choice once made, otherwise whether the camera says its LED is lit. */
+  const esp32FlashOn = esp32Flash === "auto" ? esp32.cameraFlash === true : esp32Flash === "on";
 
   const canTapFocus = focusModes.includes("single-shot") || focusModes.includes("continuous");
   /** Live check of the camera preview, so the user can fix the light before capturing. */
@@ -214,6 +219,7 @@ export default function Scanner() {
     setError(null);
     setPreview(null);
     setDiagnosis(null);
+    setEsp32Flash("auto");
     setStatus("camera");
   }
 
@@ -300,7 +306,7 @@ export default function Scanner() {
         {status === "camera" && source === "esp32" && (
           <canvas ref={esp32CanvasRef} aria-label="ESP32 camera preview" className="h-full w-full object-cover" />
         )}
-        {status === "camera" && source === "esp32" && esp32.state !== "live" && (
+        {status === "camera" && source === "esp32" && esp32.state !== "live" && !esp32.capturing && (
           <div
             role="status"
             className="pointer-events-none absolute inset-x-6 top-1/2 -translate-y-1/2 rounded-2xl bg-black/60 px-4 py-3 text-center text-sm text-white backdrop-blur"
@@ -314,6 +320,17 @@ export default function Scanner() {
             className="focus-ring pointer-events-none absolute h-16 w-16 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-white"
             style={{ left: focusRing.x, top: focusRing.y }}
           />
+        )}
+        {status === "camera" && source === "esp32" && esp32.state === "live" && !esp32.capturing && (
+          <button
+            onClick={() => setEsp32Flash(esp32FlashOn ? "off" : "on")}
+            aria-pressed={esp32FlashOn}
+            className={`absolute left-1/2 top-3 flex h-9 -translate-x-1/2 items-center gap-1.5 rounded-full px-3.5 text-sm font-medium backdrop-blur transition ${
+              esp32FlashOn ? "bg-yellow-300 text-leaf-950" : "bg-black/40 text-white"
+            }`}
+          >
+            <FlashIcon className="h-4 w-4" /> {esp32FlashOn ? "Flash on" : "Flash off"}
+          </button>
         )}
         {status === "camera" && source === "phone" && hasTorch && (
           <button
@@ -337,7 +354,7 @@ export default function Scanner() {
               <span className="flex items-center gap-2 rounded-2xl bg-amber-100/95 px-3.5 py-2 text-left text-xs font-medium text-amber-900 shadow-lg">
                 {liveLighting === "dark" ? <MoonIcon className="h-4 w-4 shrink-0" /> : <SunIcon className="h-4 w-4 shrink-0" />}
                 {liveLighting === "dark"
-                  ? source === "phone" && hasTorch
+                  ? (source === "phone" && hasTorch) || (source === "esp32" && !esp32FlashOn)
                     ? "Too dark. Move to a brighter spot or turn on Flash."
                     : "Too dark. Move to a brighter spot."
                   : "Too bright. Step into the shade or move away from the glare."}
@@ -367,6 +384,9 @@ export default function Scanner() {
           </div>
         )}
 
+        {/* The ESP32 camera is taking and sending its full-size photo: the last preview stays visible underneath. */}
+        {status === "camera" && source === "esp32" && esp32.capturing && <CapturingOverlay phase={esp32.capturePhase} />}
+
         {/* Loading: first the on-device scan, then (when it is unsure) the AI check, while the result is already below. */}
         {(status === "analyzing" || aiChecking) && <AnalysingOverlay phase={status === "analyzing" ? "scan" : "ai"} />}
       </div>
@@ -379,7 +399,7 @@ export default function Scanner() {
               Cancel
             </button>
             <button onClick={capture} disabled={esp32Waiting} className="btn-primary flex-[2]">
-              <CameraIcon className="h-5 w-5" /> {source === "esp32" && esp32.capturing ? "Receiving photo…" : "Capture"}
+              <CameraIcon className="h-5 w-5" /> {source === "esp32" && esp32.capturing ? "Capturing…" : "Capture"}
             </button>
           </div>
         ) : status === "done" || status === "error" ? (

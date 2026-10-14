@@ -1,5 +1,5 @@
 import { authorize, clientIp, fail, jpegResponse, NO_STORE } from "@/lib/camRoute";
-import { isCaptureId } from "@/lib/camRelay";
+import { isCaptureId, parseFlash } from "@/lib/camRelay";
 import { getCamStore } from "@/lib/camStore";
 import { createRateLimiter } from "@/lib/rateLimit";
 
@@ -20,7 +20,8 @@ export async function POST(request: Request) {
   if (captureLimited(clientIp(request))) return fail("Too many photos. Please wait a moment.", 429);
 
   try {
-    return Response.json({ id: await store.requestCapture(access.cam) }, { headers: NO_STORE });
+    const flash = parseFlash(new URL(request.url).searchParams.get("flash"));
+    return Response.json({ id: await store.requestCapture(access.cam, flash) }, { headers: NO_STORE });
   } catch (err) {
     console.error("[cam] capture request failed:", err instanceof Error ? err.message : err);
     return fail("The camera relay is unavailable right now.", 503);

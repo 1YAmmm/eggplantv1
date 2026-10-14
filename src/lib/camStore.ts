@@ -1,4 +1,4 @@
-import { CAPTURE_TTL_S, FRAME_TTL_S, ONLINE_WINDOW_MS, WANTED_TTL_S, newCaptureId, type Want } from "./camRelay";
+import { CAPTURE_TTL_S, FRAME_TTL_S, ONLINE_WINDOW_MS, WANTED_TTL_S, newCaptureId, type FlashChoice, type Want } from "./camRelay";
 
 /*
  * Where the ESP32-CAM relay keeps its photos for the few seconds between the camera uploading one and the phone
@@ -6,7 +6,7 @@ import { CAPTURE_TTL_S, FRAME_TTL_S, ONLINE_WINDOW_MS, WANTED_TTL_S, newCaptureI
  * `Exec`, and run on either Upstash Redis (production) or an in-memory map (`npm run dev` without Upstash).
  *
  * Keys per camera (all expire by themselves, so nothing lingers):
- *   wanted       a phone is looking; renewed by every phone poll
+ *   wanted       a phone is looking; renewed by every phone poll. "1", or "on" / "off" when the phone chose the flash
  *   capture      id of the Capture the phone is waiting for
  *   meta, jpg    the newest preview: its sequence number / time, and the JPEG as base64
  *   cap:<id>     the photo taken for one Capture request
@@ -17,22 +17,28 @@ export type Command = (string | number)[];
 /** Runs commands in order, in one round trip, and returns each result. */
 export type Exec = (commands: Command[]) => Promise<unknown[]>;
 
-export type DeviceFrame = { kind: "preview"; jpeg: string } | { kind: "capture"; id: string; jpeg: string };
+/** `flash` is what the camera reports: whether its white LED was lit when the preview was taken. */
+export type DeviceFrame = { kind: "preview"; jpeg: string; flash?: boolean } | { kind: "capture"; id: string; jpeg: string };
 
+/** `flash` is the LED state the camera last reported, when it has reported one. */
 export type PreviewPoll =
   | { status: "none"; online: false }
-  | { status: "same"; online: boolean }
-  | { status: "frame"; online: boolean; seq: number; jpeg: string };
+  | { status: "same"; online: boolean; flash?: boolean }
+  | { status: "frame"; online: boolean; seq: number; jpeg: string; flash?: boolean };
 
 export type CamStore = ReturnType<typeof createCamStore>;
 
 const key = (cam: string, name: string) => `eggcam:${cam}:${name}`;
 
-function parseMeta(raw: unknown): { seq: number; at: number } | null {
+/** What the "wanted" key holds: "1" when the phone made no choice, otherwise its choice for the flash. */
+const wantedValue = (flash: FlashChoice) => (flash === "auto" ? "1" : flash);
+
+function parseMeta(raw: unknown): { seq: number; at: number; flash?: boolean } | null {
   if (typeof raw !== "string") return null;
   try {
-    const meta = JSON.parse(raw) as { seq?: unknown; at?: unknown };
-    return typeof meta.seq === "number" && typeof meta.at === "number" ? { seq: meta.seq, at: meta.at } : null;
+    const meta = JSON.parse(raw) as { seq?: unknown; at?: unknown; flash?: unknown };
+    if (typeof meta.seq !== "number" || typeof meta.at !== "number") return null;
+    return typeof meta.flash === "boolean" ? { seq: meta.seq, at: meta.at, flash: meta.flash } : { seq: meta.seq, at: meta.at };
   } catch {
     return null;
   }
@@ -47,7 +53,7 @@ export function createCamStore(exec: Exec, now: () => number = Date.now) {
     async deviceTick(cam: string, frame: DeviceFrame | null): Promise<Want> {
       const commands: Command[] = [];
       if (frame?.kind === "preview") {
-        const meta = JSON.stringify({ seq: now(), at: now() });
+        const meta = JSON.stringify({ seq: now(), at: now(), ...(frame.flash === undefined ? {} : { flash: frame.flash }) });
         commands.push(["SET", key(cam, "meta"), meta, "EX", FRAME_TTL_S], ["SET", key(cam, "jpg"), frame.jpeg, "EX", FRAME_TTL_S]);
       } else if (frame) {
         commands.push(["SET", key(cam, `cap:${frame.id}`), frame.jpeg, "EX", FRAME_TTL_S]);
@@ -57,33 +63,41 @@ export function createCamStore(exec: Exec, now: () => number = Date.now) {
       const results = await exec(commands);
       const [wanted, pending] = results[results.length - 1] as (string | null)[];
 
+      // The phone's flash choice rides along with "someone is looking"; it ends with it, so the camera then goes back
+      // to the setting saved on the camera.
+      const flash: { flash?: "on" | "off" } = wanted === "on" || wanted === "off" ? { flash: wanted } : {};
+
       let capture = pending;
       if (frame?.kind === "capture" && pending === frame.id) {
         await exec([["DEL", key(cam, "capture")]]);
         capture = null;
       }
-      if (capture) return { mode: "capture", id: capture };
-      return { mode: wanted ? "preview" : "idle" };
+      if (capture) return { mode: "capture", id: capture, ...flash };
+      return { mode: wanted ? "preview" : "idle", ...flash };
     },
 
-    /** The phone's poll: tells the camera someone is looking, and returns the newest preview unless the phone has it. */
-    async pollPreview(cam: string, after: number): Promise<PreviewPoll> {
-      const [, rawMeta] = await exec([["SET", key(cam, "wanted"), "1", "EX", WANTED_TTL_S], ["GET", key(cam, "meta")]]);
+    /**
+     * The phone's poll: tells the camera someone is looking (and how the phone wants the flash), and returns the newest
+     * preview unless the phone has it.
+     */
+    async pollPreview(cam: string, after: number, flash: FlashChoice = "auto"): Promise<PreviewPoll> {
+      const [, rawMeta] = await exec([["SET", key(cam, "wanted"), wantedValue(flash), "EX", WANTED_TTL_S], ["GET", key(cam, "meta")]]);
       const meta = parseMeta(rawMeta);
       if (!meta) return { status: "none", online: false };
 
       const online = now() - meta.at < ONLINE_WINDOW_MS;
-      if (meta.seq === after) return { status: "same", online };
+      const lit = meta.flash === undefined ? {} : { flash: meta.flash };
+      if (meta.seq === after) return { status: "same", online, ...lit };
       const [jpeg] = await exec([["GET", key(cam, "jpg")]]);
       // The photo can expire between the two calls; the next poll sorts it out.
-      if (typeof jpeg !== "string") return { status: "same", online };
-      return { status: "frame", online, seq: meta.seq, jpeg };
+      if (typeof jpeg !== "string") return { status: "same", online, ...lit };
+      return { status: "frame", online, seq: meta.seq, jpeg, ...lit };
     },
 
     /** The Capture button: asks the camera for one full photo and returns the id to wait for. */
-    async requestCapture(cam: string): Promise<string> {
+    async requestCapture(cam: string, flash: FlashChoice = "auto"): Promise<string> {
       const id = newCaptureId();
-      await exec([["SET", key(cam, "capture"), id, "EX", CAPTURE_TTL_S], ["SET", key(cam, "wanted"), "1", "EX", WANTED_TTL_S]]);
+      await exec([["SET", key(cam, "capture"), id, "EX", CAPTURE_TTL_S], ["SET", key(cam, "wanted"), wantedValue(flash), "EX", WANTED_TTL_S]]);
       return id;
     },
 

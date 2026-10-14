@@ -94,6 +94,12 @@ fetches them from there. This works on Android and iPhone. Both the camera and t
 - Photos wait about a minute in **Upstash Redis** (free; Vercel > Storage / Marketplace sets `KV_REST_API_URL` and
   `KV_REST_API_TOKEN`, and `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` work too). `npm run dev` without them
   keeps photos in memory instead.
+- **Speed depends on where the server runs.** Every photo and every phone poll is one round trip to the server, and the server
+  talks to Redis. `vercel.json` pins the functions to `sin1` (Singapore); without it Vercel uses `iad1` (Washington DC),
+  which added about 0.5 s to each round trip from the Philippines. **Create the Upstash database in the same area** (Vercel >
+  Storage > Upstash Redis > region Singapore / `ap-southeast-1`). If yours is elsewhere, change `regions` in `vercel.json` to
+  the Vercel region nearest to the database (for example `iad1` for N. Virginia, `fra1` for Frankfurt). Check with
+  `curl -sI https://<your-site>/api/cam/frame`: the `x-vercel-id` header reads `<edge>::<function region>::...`.
 - `ESP32_CAM_CODES` lists the camera codes that may use the relay (16 to 128 characters, comma-separated); the same code
   goes into the camera's setup page and into the app on the phone. Without it the routes answer 503, and unknown codes get 401.
 - The camera has no settings in its code: its own setup page (a Wi-Fi called `EggplantCam-xxxx`, opened from a phone) holds
