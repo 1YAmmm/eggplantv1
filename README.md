@@ -88,6 +88,12 @@ phone's browser (the site is HTTPS, the camera is not), so it **uploads its phot
 fetches them from there. This works on Android and iPhone. Both the camera and the phone need internet; a phone hotspot
 (2.4 GHz) is fine for the camera. The on-device pest model is unchanged: the photo just arrives as a canvas.
 
+- **Accuracy.** The Capture photo is 1024x768; the app keeps its centre square (768x768, exactly what the viewfinder
+  shows) before the model shrinks it to 224x224. The model was trained on square photos, so stretching the whole 4:3 photo
+  would squash everything by 25%. The camera's lens has no autofocus: the viewfinder shows a **Focus** number (0-100) and a
+  "Blurry" hint, so the lens can be twisted by hand until the number peaks. On Capture the camera lets its exposure
+  settle, takes 3 photos and sends the sharpest.
+
 - The camera calls `POST /api/cam/device` (a heartbeat every ~10 s while idle, a small preview about once a second
   while a phone is looking, one bigger photo for **Capture**). The answer tells it what to send next.
 - The phone calls `GET /api/cam/frame` for the live preview and `POST` / `GET /api/cam/capture` for the Capture photo.
@@ -119,7 +125,7 @@ fetches them from there. This works on Android and iPhone. Both the camera and t
 - `src/lib/ai/providers.ts` — the AI providers and models for chat, photo second opinion and treatment plan, with retries and fallback
 - `src/lib/assist.ts`, `src/lib/secondOpinion.ts`, `src/app/api/recognize/route.ts` — the photo second opinion (decision logic, browser side, server side)
 - `src/lib/advice.ts`, `src/lib/useAdvice.ts`, `src/app/api/advice/route.ts` — the suggested treatment plan (prompt and checker, browser side, server side)
-- `src/lib/camRelay.ts`, `src/lib/camStore.ts`, `src/lib/camRoute.ts`, `src/app/api/cam/` — the ESP32-CAM relay (rules, storage, shared route helpers, the three routes); `src/lib/useEsp32Camera.ts`, `src/lib/camPrefs.ts` and `src/components/SourcePicker.tsx` — the phone side
+- `src/lib/camRelay.ts`, `src/lib/camStore.ts`, `src/lib/camRoute.ts`, `src/app/api/cam/` — the ESP32-CAM relay (rules, storage, shared route helpers, the three routes); `src/lib/useEsp32Camera.ts`, `src/lib/camPrefs.ts` and `src/components/SourcePicker.tsx` — the phone side; `src/lib/sharpness.ts` and `src/lib/useLiveFocus.ts` — the focus meter on its preview
 - `firmware/esp32cam-wifi/` — the Arduino sketch for the ESP32-CAM
 - `tests/` — `npm test` runs the unit tests for `assist.ts`, `recognize.ts`, `advice.ts` and the camera relay (`camRelay.ts`, `camStore.ts`)
 

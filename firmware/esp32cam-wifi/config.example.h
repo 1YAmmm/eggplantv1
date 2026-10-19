@@ -25,6 +25,14 @@
  * electrical noise than the usual 20 MHz. Try 20000000 only if the picture is fine and you want a higher frame rate. */
 // #define CAMERA_XCLK_HZ 10000000
 
+/* Capture takes this many photos and sends the sharpest (the biggest JPEG). 3 (default) adds about 0.3-0.5 s; 1 sends the
+ * first photo, as older versions did. */
+// #define CAPTURE_FRAMES 3
+
+/* Milliseconds the sensor gets to settle its exposure and white balance before the Capture photo (default 600). Try 1500
+ * if Capture photos come out darker than the live picture, 0 for the fastest Capture. */
+// #define CAPTURE_SETTLE_MS 600
+
 /* Root certificates the site's HTTPS certificate must chain to. They let the camera check that it is really talking to
  * your site (otherwise anyone on the same Wi-Fi could read your camera code). These two cover *.vercel.app (Google
  * Trust Services, GTS Root R1) and custom domains that use Let's Encrypt (ISRG Root X1). Delete the definition of

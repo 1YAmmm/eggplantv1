@@ -4,7 +4,8 @@ import type { FlashChoice } from "./camRelay";
 /*
  * The phone's side of the ESP32-CAM relay (see /api/cam/*). While `active`, it fetches the newest preview photo about
  * once a second and draws it on a canvas; each fetch also tells the camera that someone is looking, which wakes it
- * from idle. `capture()` asks for one full-size photo and returns it as a canvas, ready for the classifier.
+ * from idle. `capture()` asks for one full-size photo and returns its centre square (what the viewfinder shows) as a
+ * canvas, ready for the classifier.
  */
 
 export type CamState = "idle" | "waking" | "live" | "offline" | "error";
@@ -71,6 +72,22 @@ async function drawPhoto(res: Response, canvas: HTMLCanvasElement) {
   }
   canvas.getContext("2d")!.drawImage(bitmap, 0, 0);
   bitmap.close();
+}
+
+/**
+ * Decodes the Capture photo and keeps only its centre square (1024x768 -> 768x768). The model was trained on square
+ * photos and the viewfinder shows exactly this square; stretching the whole 4:3 photo instead would squash everything
+ * by 25% and add edges the user never saw.
+ */
+async function squarePhoto(res: Response) {
+  const bitmap = await createImageBitmap(await res.blob());
+  const side = Math.min(bitmap.width, bitmap.height);
+  const canvas = document.createElement("canvas");
+  canvas.width = side;
+  canvas.height = side;
+  canvas.getContext("2d")!.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, side, side);
+  bitmap.close();
+  return canvas;
 }
 
 /**
@@ -180,7 +197,7 @@ export function useEsp32Camera(
     };
   }, [active, code, canvasRef]);
 
-  /** Asks the camera for one full-size photo and waits for it. Rejects with a message that can be shown to the user. */
+  /** Asks the camera for one full-size photo and waits for it (cropped to the viewfinder's square). Rejects with a message that can be shown to the user. */
   const capture = useCallback(async (): Promise<HTMLCanvasElement> => {
     const signal = abortRef.current?.signal;
     if (!signal || signal.aborted) throw new Error(NO_CAMERA);
@@ -199,11 +216,7 @@ export function useEsp32Camera(
         await sleep(CAPTURE_POLL_MS, signal);
         if (signal.aborted) break;
         const res = await fetch(`/api/cam/capture?id=${id}`, { headers, cache: "no-store", signal });
-        if (res.status === 200) {
-          const canvas = document.createElement("canvas");
-          await drawPhoto(res, canvas);
-          return canvas;
-        }
+        if (res.status === 200) return await squarePhoto(res);
         if (res.status !== 204) throw new Error(failure(res));
       }
       throw new Error(signal.aborted ? NO_CAMERA : "The camera did not send the photo. Check that it is powered and online, then try again.");

@@ -13,7 +13,8 @@ need a computer or a new upload.
 > restarts, and sent a preview (about one photo a second) and a Capture photo (arriving in about 2-4 s) to the site on
 > Vercel, which the relay returned byte for byte. Not tried yet: the setup page and 3x RST from a phone, an iPhone or
 > Android phone using the app with it, the Wi-Fi of a phone hotspot, and photos of a real eggplant at a good distance with
-> the lens focused.
+> the lens focused. The sharpest-of-3 Capture and the 600 ms settle time (see "Photo sizes") compile but have not been run
+> on the board yet.
 
 ## What you need
 
@@ -111,7 +112,10 @@ field. Weak USB ports and long thin cables are the usual cause of random reboots
   always means one of these:
   1. **Too close.** Keep the leaf or fruit about 15 to 30 cm from the lens; at 5 cm nothing can be sharp.
   2. **Focus ring.** Hold the board still and slowly twist the lens barrel by hand (a drop of rubber or tape helps if it is
-     stiff) while watching the preview in the app, until a leaf at your working distance is sharp. Stop when it is sharpest.
+     stiff) while watching the **Focus** number at the bottom of the app's viewfinder, with a leaf at your working
+     distance. Stop where the number is highest (it lags about a second behind the lens). Around 60-80 is typical for a
+     sharp leaf; below about 36 the app shows "Blurry". A smooth fruit scores lower than a hairy leaf, so compare numbers
+     on the same subject.
   3. **Film on the lens.** New modules often have a thin plastic film over the lens: peel it off.
   4. **Light.** Dim rooms mean a long exposure (blur) and grain. Use daylight, or set **Light** to *on whenever a phone is
      looking* on the setup page to use the white LED. Very close to a shiny leaf the LED can glare: then choose *only for
@@ -121,7 +125,13 @@ field. Weak USB ports and long thin cables are the usual cause of random reboots
 - **Photo sizes:** `PREVIEW_SIZE` (VGA 640x480) and `CAPTURE_SIZE` (XGA 1024x768) with their quality numbers are at the top
   of the sketch; both are 4:3, so the preview shows what the capture will show. Higher quality numbers mean smaller,
   rougher photos. The pest model looks at 224x224 pixels, but small pests (aphids, thrips) only survive that downscale if
-  the photo is sharp, and the AI second opinion looks at the photo at about 768 px.
+  the photo is sharp, and the AI second opinion looks at the photo at about 768 px. The app keeps the centre square of the
+  Capture photo (768x768, what the viewfinder shows), because the model was trained on square photos. The Serial Monitor
+  prints the real size: `Capture sent: 1024x768, 48211 bytes (sharpest of 3), ...`.
+- **Capture photo quality:** before the Capture photo the sensor gets `CAPTURE_SETTLE_MS` (600 ms) to settle its exposure
+  and white balance at the bigger size, then it takes `CAPTURE_FRAMES` (3) photos and sends the biggest JPEG: at the same
+  quality setting, a sharper, steadier photo compresses less. Together this adds about 1 s to a Capture. Both can be
+  changed in `config.h`.
 - **Sensor clock:** `CAMERA_XCLK_HZ` defaults to 10 MHz (less electrical noise than 20 MHz, plenty for one photo a second).
   The frame buffers are reserved for the biggest size at start-up; without that the driver prints `cam_hal: FB-OVF` and
   large photos are damaged.
@@ -154,4 +164,4 @@ field. Weak USB ports and long thin cables are the usual cause of random reboots
 | `Server: ... relay is not set up` | `ESP32_CAM_CODES` or Upstash is missing on the site. |
 | The picture jumps between two different views, the Flash button does not match the LED, or the camera never goes idle | **Two cameras (or a test program) are using the same camera code**, so their photos mix on the server and a Capture is answered by whichever asks first. Switch one of them off, or give each its own code (`ESP32_CAM_CODES` takes several, comma-separated, and each camera's setup page holds its own). To check: put one camera in setup mode (type `setup` in the Serial Monitor); if photos keep arriving in the app, another one is sending. |
 | App stays on "Waking the camera..." | The camera is off, not on Wi-Fi, or the codes differ. Check the Serial Monitor. |
-| Photos are dark, green or blurry | Wait a second after a size change, add light, twist the lens to focus. |
+| Photos are dark, green or blurry | Add light, and twist the lens until the app's Focus number peaks. Capture photos darker than the preview: set `CAPTURE_SETTLE_MS` to 1500 in `config.h`. |

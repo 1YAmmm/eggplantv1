@@ -452,13 +452,21 @@ static void discardFrames(int count) {
   }
 }
 
-/** Extra time the sensor gets to re-adjust its exposure after it switches to the bigger Capture size, on top of throwing
- *  4 frames away. 0 = no extra wait. If your Capture photos come out darker than the live picture, try 1500: the
- *  Serial Monitor then prints how many frames were thrown away. (Not measured on this board yet: two cameras were
- *  sharing one camera code while this was tested, so the Capture photos could not be told apart.) */
+/** Time the sensor gets to re-adjust its exposure and white balance after it switches to the bigger Capture size (and
+ *  after the white LED comes on), on top of throwing 4 frames away. A dark or colour-tinted photo is classified worse,
+ *  so the Capture photo waits a little. 0 = no extra wait. If your Capture photos still come out darker than the live
+ *  picture, try 1500: the Serial Monitor prints how many frames were thrown away. */
 #ifndef CAPTURE_SETTLE_MS
-#define CAPTURE_SETTLE_MS 0
+#define CAPTURE_SETTLE_MS 600
 #endif
+
+/** How many photos Capture takes; the sharpest is sent (see grabSharpest). 1 = send the first one. */
+#ifndef CAPTURE_FRAMES
+#define CAPTURE_FRAMES 3
+#endif
+
+/** True when the camera has 2 frame buffers (PSRAM), so one photo can be kept while the next is taken. */
+static bool twoBuffers = false;
 
 /** Throws frames away until at least `minFrames` are gone AND `ms` have passed, so the exposure can settle. */
 static void settleFrames(uint32_t ms, int minFrames) {
@@ -469,6 +477,27 @@ static void settleFrames(uint32_t ms, int minFrames) {
     if (frame) esp_camera_fb_return(frame);
   }
   Serial.printf("Exposure: %d frames thrown away in %lu ms before the Capture photo\n", i, (unsigned long)(millis() - started));
+}
+
+/** Takes CAPTURE_FRAMES photos and keeps the biggest JPEG. At the same quality setting a sharp, steady photo holds more
+ *  detail than a shaken or soft one, so it compresses less and comes out bigger. Keeping one photo while the next is
+ *  taken needs the second frame buffer; with only one, the first photo is used. `taken` says how many were compared. */
+static camera_fb_t *grabSharpest(int &taken) {
+  camera_fb_t *best = esp_camera_fb_get();
+  taken = best ? 1 : 0;
+  if (!best || !twoBuffers) return best;
+  for (int i = 1; i < CAPTURE_FRAMES; i++) {
+    camera_fb_t *next = esp_camera_fb_get();
+    if (!next) break;
+    taken++;
+    if (next->len > best->len) {
+      esp_camera_fb_return(best);
+      best = next;
+    } else {
+      esp_camera_fb_return(next);
+    }
+  }
+  return best;
 }
 
 static bool flashOn = false;
@@ -554,6 +583,7 @@ static bool startCamera() {
         sensor->set_quality(sensor, PREVIEW_QUALITY);
       }
       sizedFor = MODE_PREVIEW;
+      twoBuffers = config.fb_count >= 2;
       discardFrames(3);  // the first frames are dark while the exposure settles
       return true;
     }
@@ -804,12 +834,13 @@ static int post(camera_fb_t *fb, String &answer) {
 static bool exchange() {
   camera_fb_t *fb = nullptr;
   uint32_t prepareMs = 0;  // switching size / LED, then waiting for a fresh frame: the camera's share of the delay
+  int framesCompared = 1;  // Capture sends the sharpest of several photos
   if (want != MODE_IDLE) {
     const uint32_t prepareStarted = millis();
     // The app's Flash button wins; without it, the Light setting saved on the setup page decides.
     setFlash(appFlash >= 0 ? appFlash == 1 : (cfg.flash == 2 || (cfg.flash == 1 && want == MODE_CAPTURE)));
     useSize(want);
-    fb = esp_camera_fb_get();
+    fb = want == MODE_CAPTURE ? grabSharpest(framesCompared) : esp_camera_fb_get();
     prepareMs = millis() - prepareStarted;
     if (!fb) Serial.println("Camera: no frame, sending a heartbeat instead");
   } else {
@@ -819,6 +850,8 @@ static bool exchange() {
     plainClient.stop();
   }
   const size_t photoBytes = fb ? fb->len : 0;
+  const int photoWidth = fb ? fb->width : 0;  // printed below, so the real photo size can be checked on the board
+  const int photoHeight = fb ? fb->height : 0;
   const Mode sent = fb ? want : MODE_IDLE;
 
   const uint32_t started = millis();
@@ -841,11 +874,11 @@ static bool exchange() {
   }
 
   if (sent == MODE_CAPTURE) {
-    Serial.printf("Capture sent: %u bytes, camera %lu ms + upload %lu ms\n", (unsigned)photoBytes, (unsigned long)prepareMs,
-                  (unsigned long)(millis() - started));
+    Serial.printf("Capture sent: %dx%d, %u bytes (sharpest of %d), camera %lu ms + upload %lu ms\n", photoWidth, photoHeight,
+                  (unsigned)photoBytes, framesCompared, (unsigned long)prepareMs, (unsigned long)(millis() - started));
   } else if (sent == MODE_PREVIEW && ++previewsSent % 10 == 1) {
-    Serial.printf("Preview sent: %u bytes, camera %lu ms + upload %lu ms (every 10th is logged)\n", (unsigned)photoBytes,
-                  (unsigned long)prepareMs, (unsigned long)(millis() - started));
+    Serial.printf("Preview sent: %dx%d, %u bytes, camera %lu ms + upload %lu ms (every 10th is logged)\n", photoWidth,
+                  photoHeight, (unsigned)photoBytes, (unsigned long)prepareMs, (unsigned long)(millis() - started));
   }
 
   const String next = jsonString(answer, "want");
