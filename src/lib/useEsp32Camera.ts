@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
+import { drawPhoto, squarePhoto } from "./camPhoto";
 import type { FlashChoice } from "./camRelay";
 
 /*
@@ -12,6 +13,17 @@ export type CamState = "idle" | "waking" | "live" | "offline" | "error";
 
 /** While a Capture is under way: the request is reaching the camera, then its full-size photo is coming back. */
 export type CapturePhase = "asking" | "receiving";
+
+/** What the scanner needs from an ESP32 camera link: this Wi-Fi relay, or the Bluetooth one (useEsp32Bluetooth). */
+export type Esp32Link = {
+  state: CamState;
+  message: string | null;
+  capturing: boolean;
+  capturePhase: CapturePhase;
+  /** Whether the camera's white LED is really lit, as the camera reports it; null until it has said. */
+  cameraFlash: boolean | null;
+  capture: () => Promise<HTMLCanvasElement>;
+};
 
 /** Pause between preview polls. The camera sends about one photo a second, so polling this often keeps the picture fresh. */
 const POLL_MS = 300;
@@ -63,33 +75,6 @@ function untilVisible(signal: AbortSignal) {
   });
 }
 
-/** Decodes a JPEG response onto a canvas, resizing the canvas to the photo. */
-async function drawPhoto(res: Response, canvas: HTMLCanvasElement) {
-  const bitmap = await createImageBitmap(await res.blob());
-  if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-    canvas.width = bitmap.width;
-    canvas.height = bitmap.height;
-  }
-  canvas.getContext("2d")!.drawImage(bitmap, 0, 0);
-  bitmap.close();
-}
-
-/**
- * Decodes the Capture photo and keeps only its centre square (1024x768 -> 768x768). The model was trained on square
- * photos and the viewfinder shows exactly this square; stretching the whole 4:3 photo instead would squash everything
- * by 25% and add edges the user never saw.
- */
-async function squarePhoto(res: Response) {
-  const bitmap = await createImageBitmap(await res.blob());
-  const side = Math.min(bitmap.width, bitmap.height);
-  const canvas = document.createElement("canvas");
-  canvas.width = side;
-  canvas.height = side;
-  canvas.getContext("2d")!.drawImage(bitmap, (bitmap.width - side) / 2, (bitmap.height - side) / 2, side, side, 0, 0, side, side);
-  bitmap.close();
-  return canvas;
-}
-
 /**
  * `flash` is the user's choice for the camera's white LED: "on" / "off", or "auto" to leave it to the camera's own
  * setting. It rides along with every poll, so the camera follows within about a second.
@@ -99,7 +84,7 @@ export function useEsp32Camera(
   active: boolean,
   canvasRef: RefObject<HTMLCanvasElement | null>,
   flash: FlashChoice = "auto",
-) {
+): Esp32Link {
   const [state, setState] = useState<CamState>("waking");
   const [message, setMessage] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
@@ -152,7 +137,7 @@ export function useEsp32Camera(
             if (res.headers.get("x-camera-online") === "1") {
               try {
                 const canvas = canvasRef.current;
-                if (canvas) await drawPhoto(res, canvas);
+                if (canvas) await drawPhoto(await res.blob(), canvas);
                 lastPhotoAt = Date.now();
                 gotPhoto = true;
                 setState("live");
@@ -216,7 +201,7 @@ export function useEsp32Camera(
         await sleep(CAPTURE_POLL_MS, signal);
         if (signal.aborted) break;
         const res = await fetch(`/api/cam/capture?id=${id}`, { headers, cache: "no-store", signal });
-        if (res.status === 200) return await squarePhoto(res);
+        if (res.status === 200) return await squarePhoto(await res.blob());
         if (res.status !== 204) throw new Error(failure(res));
       }
       throw new Error(signal.aborted ? NO_CAMERA : "The camera did not send the photo. Check that it is powered and online, then try again.");

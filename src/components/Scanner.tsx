@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { applyOpinion, needsSecondOpinion, type Opinion } from "@/lib/assist";
-import { useCamPrefs } from "@/lib/camPrefs";
+import { useCamPrefs, type Link, type Source } from "@/lib/camPrefs";
 import { isWellFormedCode, type FlashChoice } from "@/lib/camRelay";
 import type { Lighting } from "@/lib/lighting";
 import { classify, loadModel, type Diagnosis } from "@/lib/model";
 import { askSecondOpinion, ASSIST_MODE } from "@/lib/secondOpinion";
-import { useEsp32Camera } from "@/lib/useEsp32Camera";
+import { useEsp32Bluetooth } from "@/lib/useEsp32Bluetooth";
+import { useEsp32Camera, type Esp32Link } from "@/lib/useEsp32Camera";
 import { useLiveFocus } from "@/lib/useLiveFocus";
 import { useLiveLighting } from "@/lib/useLiveLighting";
 import AnalysingOverlay from "./AnalysingOverlay";
@@ -58,13 +59,17 @@ export default function Scanner() {
   const sourceRef = useRef<HTMLImageElement | HTMLCanvasElement | null>(null);
   const scanId = useRef(0);
 
-  /** Where the photo comes from, and the code that pairs this phone with its ESP32 camera (both remembered). */
-  const { source, code: camCode, setSource, setCode: setCamCode } = useCamPrefs();
+  /** Where the photo comes from, how the ESP32 camera connects, and the code that pairs this phone with it (all remembered). */
+  const { source, link, canUseBluetooth, code: camCode, setSource, setLink, setCode: setCamCode } = useCamPrefs();
   const esp32CanvasRef = useRef<HTMLCanvasElement>(null);
   /** The user's choice for the ESP32 camera's white LED. "auto" leaves it to the camera's own setting. */
   const [esp32Flash, setEsp32Flash] = useState<FlashChoice>("auto");
-  /** The ESP32 camera's photos reach the phone through the server; this draws them on `esp32CanvasRef` while scanning. */
-  const esp32 = useEsp32Camera(camCode, status === "camera" && source === "esp32", esp32CanvasRef, esp32Flash);
+  const scanningEsp32 = status === "camera" && source === "esp32";
+  /** Over Wi-Fi the ESP32 camera's photos reach the phone through the server; over Bluetooth they come straight from it. */
+  const esp32Wifi = useEsp32Camera(camCode, scanningEsp32 && link === "wifi", esp32CanvasRef, esp32Flash);
+  const esp32Bluetooth = useEsp32Bluetooth(camCode, scanningEsp32 && link === "bluetooth", esp32CanvasRef, esp32Flash);
+  /** Either link draws its previews on `esp32CanvasRef`, so the rest of the scanner does not care which one is in use. */
+  const esp32: Esp32Link = link === "bluetooth" ? esp32Bluetooth : esp32Wifi;
   /** What the button shows: the user's choice once made, otherwise whether the camera says its LED is lit. */
   const esp32FlashOn = esp32Flash === "auto" ? esp32.cameraFlash === true : esp32Flash === "on";
 
@@ -218,13 +223,34 @@ export default function Scanner() {
     }
   }
 
-  /** The ESP32 viewfinder fills itself: once its canvas is on screen, `useEsp32Camera` starts fetching photos. */
-  function startEsp32Camera() {
+  /**
+   * The ESP32 viewfinder fills itself: once its canvas is on screen, the link starts sending photos. Bluetooth first
+   * needs the user to pick the camera in Chrome's list, which the browser only allows straight from this tap.
+   */
+  async function startEsp32Camera() {
     setError(null);
     setPreview(null);
     setDiagnosis(null);
     setEsp32Flash("auto");
     setStatus("camera");
+    if (link !== "bluetooth" || esp32Bluetooth.connected) return;
+    try {
+      // false: the user closed the list without picking a camera.
+      if (!(await esp32Bluetooth.connect())) setStatus("idle");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not connect to the camera over Bluetooth.");
+      setStatus("idle");
+    }
+  }
+
+  /** While the phone is connected over Bluetooth the camera pauses its Wi-Fi relay, so leaving Bluetooth hangs up. */
+  function chooseSource(next: Source) {
+    if (next !== "esp32") esp32Bluetooth.disconnect();
+    setSource(next);
+  }
+  function chooseLink(next: Link) {
+    if (next !== "bluetooth") esp32Bluetooth.disconnect();
+    setLink(next);
   }
 
   async function captureEsp32() {
@@ -315,7 +341,7 @@ export default function Scanner() {
             role="status"
             className="pointer-events-none absolute inset-x-6 top-1/2 -translate-y-1/2 rounded-2xl bg-black/60 px-4 py-3 text-center text-sm text-white backdrop-blur"
           >
-            {esp32.state === "waking" ? "Waking the camera… this can take up to 10 seconds." : esp32.message}
+            {esp32.state === "waking" ? (esp32.message ?? "Waking the camera… this can take up to 10 seconds.") : esp32.message}
           </div>
         )}
         {status === "camera" && source === "phone" && focusRing && (
@@ -431,7 +457,15 @@ export default function Scanner() {
           </button>
         ) : (
           <>
-            <SourcePicker source={source} onSourceChange={setSource} code={camCode} onCodeChange={setCamCode} />
+            <SourcePicker
+              source={source}
+              onSourceChange={chooseSource}
+              link={link}
+              onLinkChange={chooseLink}
+              canUseBluetooth={canUseBluetooth}
+              code={camCode}
+              onCodeChange={setCamCode}
+            />
             <button
               onClick={source === "esp32" ? startEsp32Camera : startCamera}
               disabled={!modelReady || status === "analyzing" || (source === "esp32" && !isWellFormedCode(camCode))}

@@ -9,6 +9,9 @@
  * Each answer is a tiny JSON like {"want":"preview","nextMs":500}; it says what the NEXT request should carry and
  * how long to wait before sending it.
  *
+ * It can also send its photos straight to a phone over Bluetooth Low Energy (Chrome on Android, see "Bluetooth" below
+ * and src/lib/camBle.ts). While a phone is logged in over Bluetooth, the Wi-Fi relay pauses.
+ *
  * Settings (Wi-Fi networks, site address, camera code) are NOT compiled in. They are typed into the camera's own setup
  * page and kept in its flash memory. The camera opens that page (a Wi-Fi called "EggplantCam-xxxx") when
  *   - nothing is saved yet,
@@ -30,6 +33,7 @@
 #include <time.h>
 
 #include "esp_camera.h"
+#include "esp_mac.h"
 #include "esp_sntp.h"
 
 /* Arduino-ESP32 3.x has its own global called `Network`. The first version of config.h in this project declared
@@ -37,6 +41,15 @@
 #define Network OldConfigNetwork
 #include "config.h"
 #undef Network
+
+#ifndef DISABLE_BLUETOOTH
+#include <BLE2902.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+
+#include "esp_gatt_common_api.h"
+#include "mbedtls/platform.h"
+#endif
 
 #ifdef DISABLE_BROWNOUT_DETECTOR
 #include "soc/rtc_cntl_reg.h"
@@ -137,6 +150,24 @@ static WiFiMulti wifiMulti;
 static WiFiClientSecure secureClient;
 static WiFiClient plainClient;
 static HTTPClient http;
+
+/** True while a phone is logged in over Bluetooth: the Wi-Fi relay then waits (see the Bluetooth section). */
+static bool bluetoothInUse();
+
+/** Free memory the Wi-Fi, HTTPS and Bluetooth all draw from (the ESP32's internal RAM, not the PSRAM). */
+static void printMemory(const char *when) {
+  Serial.printf("Memory %s: %u bytes free, largest block %u\n", when, (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
+
+/** "EggplantCam-" and the end of the MAC address: the setup hotspot's name, and the camera's name in Bluetooth lists. */
+static String cameraName() {
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  char name[20];
+  snprintf(name, sizeof name, "EggplantCam-%02X%02X", mac[4], mac[5]);
+  return String(name);
+}
 
 // ---------------------------------------------------------------------------------------------------------------
 // Settings
@@ -388,9 +419,7 @@ static void runSetupPortal(const char *reason, bool canGiveUp) {
   }
   WiFi.scanDelete();
 
-  String mac = WiFi.macAddress();
-  mac.replace(":", "");
-  const String apName = "EggplantCam-" + mac.substring(mac.length() - 4);
+  const String apName = cameraName();
   WiFi.mode(WIFI_AP);
   WiFi.softAP(apName.c_str(), SETUP_AP_PASSWORD);
   delay(300);
@@ -414,7 +443,8 @@ static void runSetupPortal(const char *reason, bool canGiveUp) {
       digitalWrite(STATUS_LED_GPIO_NUM, ledOn ? LOW : HIGH);
       lastBlink = millis();
     }
-    if (canGiveUp && millis() - started > PORTAL_TIMEOUT_MS) {
+    // Not while a phone is using the camera over Bluetooth: a restart would cut it off.
+    if (canGiveUp && millis() - started > PORTAL_TIMEOUT_MS && !bluetoothInUse()) {
       Serial.println("Setup page timed out. Restarting...");
       ESP.restart();
     }
@@ -443,6 +473,15 @@ static void checkSerialCommands() {
 // ---------------------------------------------------------------------------------------------------------------
 // Camera
 // ---------------------------------------------------------------------------------------------------------------
+
+/** The Wi-Fi relay (loop) and the Bluetooth task both use the camera: the LED, the photo size and the frame buffers. */
+static SemaphoreHandle_t cameraLock = nullptr;
+
+/** Holds the camera for one block, so the Wi-Fi relay and Bluetooth take turns with it. */
+struct CameraTurn {
+  CameraTurn() { xSemaphoreTake(cameraLock, portMAX_DELAY); }
+  ~CameraTurn() { xSemaphoreGive(cameraLock); }
+};
 
 /** Throws away frames that were captured with the old size or before the exposure had settled. */
 static void discardFrames(int count) {
@@ -770,6 +809,9 @@ static void connectWifi(uint32_t giveUpMs) {
   uint8_t lastPrintedReason = 0;
   // WiFiMulti.run() returns at once while it scans or when no saved name is in range, so wait a moment between calls.
   while (wifiMulti.run(15000) != WL_CONNECTED) {
+    // A phone is using the camera over Bluetooth: stop trying (and never open the setup page meanwhile); loop() tries
+    // again once the phone is done.
+    if (bluetoothInUse()) return;
     closeResetWindow();
     const uint32_t now = millis();
     if (wifiReasonIsNew && lastWifiReason != lastPrintedReason) {
@@ -790,6 +832,7 @@ static void connectWifi(uint32_t giveUpMs) {
     delay(100);
   }
   Serial.printf("Wi-Fi: connected to \"%s\", IP %s\n", WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+  printMemory("with Wi-Fi");
   if (useTls) syncClock();
 }
 
@@ -832,6 +875,7 @@ static int post(camera_fb_t *fb, String &answer) {
 
 /** Sends what the server last asked for, then reads what it wants next. Returns false when the request failed. */
 static bool exchange() {
+  CameraTurn turn;  // the photo stays in its frame buffer until the upload is done
   camera_fb_t *fb = nullptr;
   uint32_t prepareMs = 0;  // switching size / LED, then waiting for a fresh frame: the camera's share of the delay
   int framesCompared = 1;  // Capture sends the sharpest of several photos
@@ -894,7 +938,283 @@ static bool exchange() {
   return true;
 }
 
+// ---------------------------------------------------------------------------------------------------------------
+// Bluetooth: photos straight to a phone (Bluetooth Low Energy through Chrome's Web Bluetooth, so Android only)
+// ---------------------------------------------------------------------------------------------------------------
+//
+// The same IDs and packets as src/lib/camBle.ts; change both together. The phone writes text commands to the control
+// characteristic: "code:<camera code>" first, then "preview", "capture", "stop" or "flash:on|off|auto". The camera answers
+// on the photo characteristic with START [0x01, 'P' or 'C', JPEG length (uint32, little-endian), LED lit], DATA [0x02,
+// JPEG bytes...] and STATUS [0x04, text] packets. The Bluetooth stack runs the callbacks on its own task, so they only
+// set the variables below; bluetoothTask() does the camera work and the sending.
+
+#ifndef DISABLE_BLUETOOTH
+#define BLE_SERVICE_UUID "6078929d-d746-456d-b9f8-5925d43b2c39"
+#define BLE_CONTROL_UUID "014fcfe2-de44-4e5b-8244-beb1461316fe"
+#define BLE_PHOTO_UUID "30d8947f-62c7-46d2-8fdc-ee257049ea39"
+
+static const uint8_t PACKET_START = 0x01;
+static const uint8_t PACKET_DATA = 0x02;
+static const uint8_t PACKET_STATUS = 0x04;
+/** Pause between two previews, so the phone keeps up and the radio has time for other work. */
+static const uint32_t BLE_PREVIEW_GAP_MS = 100;
+/** Give up on a photo when Bluetooth has not taken a single piece of it for this long. */
+static const uint32_t BLE_STALL_MS = 2000;
+
+static BLECharacteristic *blePhoto = nullptr;
+static volatile bool bleConnected = false;
+static volatile bool bleLoggedIn = false;          // the phone sent the right camera code
+static volatile Mode bleWant = MODE_IDLE;          // what the phone wants, like `want` for the Wi-Fi relay
+static volatile int bleFlash = -1;                 // the phone's Flash button: 1 on, 0 off, -1 the saved Light setting
+static volatile uint16_t bleConnId = 0;
+static volatile uint16_t bleMtu = 23;              // raised by the phone (Chrome on Android asks for 517)
+static const char *volatile bleStatus = nullptr;  // a STATUS for bluetoothTask() to send
+static uint32_t blePreviewsSent = 0;
+
+static bool bluetoothInUse() {
+  return bleConnected && bleLoggedIn;
+}
+
+/*
+ * Internal RAM. The camera, Wi-Fi, HTTPS and the Bluetooth stack all want the ESP32's fast internal RAM, and together they
+ * do not fit: measured on the board, 3 KB were left once Wi-Fi had started, and the handshake with the router failed. The
+ * 4 MB PSRAM has room, so with Bluetooth on:
+ *  - malloc() puts blocks of 256 bytes and more in PSRAM (the board package's limit is 4 KB). The Bluetooth stack's
+ *    working memory goes there, like Espressif's BT_ALLOCATION_FROM_SPIRAM_FIRST setting. Wi-Fi, the camera's DMA and the
+ *    task stacks ask for internal RAM explicitly and still get it.
+ *  - HTTPS (mbedTLS) takes its buffers from PSRAM, like Espressif's MBEDTLS_EXTERNAL_MEM_ALLOC setting.
+ * Both must happen before anything is allocated that would later be freed with the other allocator: first thing in setup().
+ */
+static void *tlsCalloc(size_t count, size_t size) {
+  void *block = heap_caps_calloc(count, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  return block ? block : heap_caps_calloc(count, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+static void usePsramForBuffers() {
+  if (!psramFound()) return;
+  heap_caps_malloc_extmem_enable(256);
+  mbedtls_platform_set_calloc_free(tlsCalloc, heap_caps_free);
+}
+
+/*
+ * Room in IRAM. Wi-Fi + Bluetooth + the camera fill the ESP32's 128 KB of IRAM (the fast memory some code must run from)
+ * to the last byte; the Bluetooth controller alone takes 33 KB. The ESP32-CAM's PSRAM workaround also puts the C library's
+ * date functions in IRAM whenever they are linked, and HTTPClient links strptime() and mktime() for its cookies (3.2 KB):
+ * that made the sketch 2.2 KB too big to link. These two replacements are ordinary code in flash. The site sets no
+ * cookies, so HTTPClient never calls strptime(). It calls mktime() on every request (and ignores the result without a
+ * cookie jar); this clock runs on UTC (configTime(0, 0, ...)), so a UTC mktime() gives the same answer as the library's.
+ */
+extern "C" char *strptime(const char *, const char *, struct tm *) {
+  return nullptr;  // "could not read the date": only HTTPClient's cookie code calls it, and that never runs here
+}
+
+extern "C" time_t mktime(struct tm *tm) {
+  // Days since 1970-01-01, out-of-range fields allowed (Howard Hinnant's days_from_civil, months counted from 0).
+  long long year = tm->tm_year + 1900LL + tm->tm_mon / 12;
+  int month = tm->tm_mon % 12;
+  if (month < 0) {
+    month += 12;
+    year--;
+  }
+  const long long y = year - (month < 2 ? 1 : 0);
+  const long long era = (y >= 0 ? y : y - 399) / 400;
+  const long long yearOfEra = y - era * 400;
+  const long long dayOfYear = (153 * (month >= 2 ? month - 2 : month + 10) + 2) / 5 + tm->tm_mday - 1;
+  const long long dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
+  const long long days = era * 146097 + dayOfEra - 719468;
+  const time_t t = (time_t)(days * 86400 + tm->tm_hour * 3600LL + tm->tm_min * 60LL + tm->tm_sec);
+  gmtime_r(&t, tm);  // tidies the fields up, as mktime() does
+  return t;
+}
+
+/** Compares two strings without stopping at the first difference, like the server's matchCode. */
+static bool sameText(const String &a, const String &b) {
+  unsigned diff = a.length() ^ b.length();
+  const unsigned length = std::max(a.length(), b.length());
+  for (unsigned i = 0; i < length; i++) diff |= (i < a.length() ? a[i] : 0) ^ (i < b.length() ? b[i] : 0);
+  return diff == 0;
+}
+
+class BleServerEvents : public BLEServerCallbacks {
+  void onConnect(BLEServer *server, esp_ble_gatts_cb_param_t *param) override {
+    bleConnId = param->connect.conn_id;
+    bleMtu = 23;
+    bleLoggedIn = false;
+    bleWant = MODE_IDLE;
+    bleFlash = -1;
+    bleConnected = true;
+    // A short connection interval (7.5-15 ms) lets more pieces of a photo through each second.
+    server->requestConnParams(param->connect.remote_bda, 6, 12, 0, 400);
+    Serial.println("Bluetooth: a phone connected");
+  }
+  void onDisconnect(BLEServer *, esp_ble_gatts_cb_param_t *) override {
+    bleConnected = false;
+    bleLoggedIn = false;
+    bleWant = MODE_IDLE;
+    Serial.println("Bluetooth: the phone disconnected");
+    BLEDevice::startAdvertising();
+  }
+  void onMtuChanged(BLEServer *, esp_ble_gatts_cb_param_t *param) override {
+    bleMtu = param->mtu.mtu;
+    Serial.printf("Bluetooth: packet size %u bytes\n", (unsigned)bleMtu);
+  }
+};
+
+class BleControlEvents : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *characteristic) override {
+    String command = characteristic->getValue();
+    command.trim();
+    if (command.startsWith("code:")) {
+      if (!validCode(cfg.code)) {
+        bleStatus = "no-code";
+        return;
+      }
+      bleLoggedIn = sameText(command.substring(5), cfg.code);
+      bleStatus = bleLoggedIn ? "ok" : "wrong-code";
+      Serial.println(bleLoggedIn ? "Bluetooth: right camera code; the Wi-Fi relay waits" : "Bluetooth: wrong camera code");
+      return;
+    }
+    if (!bleLoggedIn) {
+      bleStatus = "locked";
+      return;
+    }
+    if (command == "preview") bleWant = MODE_PREVIEW;
+    else if (command == "capture") bleWant = MODE_CAPTURE;
+    else if (command == "stop") bleWant = MODE_IDLE;
+    else if (command.startsWith("flash:")) bleFlash = command == "flash:on" ? 1 : command == "flash:off" ? 0 : -1;
+  }
+};
+
+/** Sends one notification as soon as the Bluetooth controller has room for it, so no piece of a photo is lost. */
+static bool notifyPacket(const uint8_t *data, size_t length) {
+  const uint32_t started = millis();
+  while (esp_ble_get_cur_sendable_packets_num(bleConnId) == 0) {
+    if (!bleConnected || millis() - started > BLE_STALL_MS) return false;
+    vTaskDelay(1);
+  }
+  blePhoto->setValue(data, length);
+  blePhoto->notify();
+  return true;
+}
+
+static void sendStatus(const char *text) {
+  uint8_t packet[24];
+  const size_t length = std::min<size_t>(strlen(text), sizeof packet - 1);
+  packet[0] = PACKET_STATUS;
+  memcpy(packet + 1, text, length);
+  notifyPacket(packet, length + 1);
+}
+
+/** START, then the JPEG in pieces as big as one notification allows (MTU - 3 bytes, at most 512, minus the type byte). */
+static bool sendPhoto(const camera_fb_t *fb, Mode mode) {
+  static uint8_t packet[513];
+  const size_t room = std::min<size_t>(bleMtu > 23 ? bleMtu - 3 : 20, 512) - 1;
+  packet[0] = PACKET_START;
+  packet[1] = mode == MODE_CAPTURE ? 'C' : 'P';
+  for (int i = 0; i < 4; i++) packet[2 + i] = (fb->len >> (8 * i)) & 0xff;
+  packet[6] = flashOn ? 1 : 0;
+  if (!notifyPacket(packet, 7)) return false;
+  packet[0] = PACKET_DATA;
+  for (size_t sent = 0; sent < fb->len;) {
+    const size_t length = std::min(room, fb->len - sent);
+    memcpy(packet + 1, fb->buf + sent, length);
+    if (!notifyPacket(packet, length + 1)) return false;
+    sent += length;
+  }
+  return true;
+}
+
+/** Streams previews while the logged-in phone wants them, and sends one Capture photo when it asks. */
+static void bluetoothTask(void *) {
+  for (;;) {
+    const char *status = bleStatus;
+    if (status) {
+      bleStatus = nullptr;
+      sendStatus(status);
+    }
+    const Mode mode = bluetoothInUse() ? (Mode)bleWant : MODE_IDLE;
+    if (mode == MODE_IDLE) {
+      // The phone stopped looking: the LED goes off. With no phone logged in, the Wi-Fi relay looks after the LED.
+      if (bluetoothInUse() && flashOn) {
+        CameraTurn turn;
+        setFlash(false);
+      }
+      vTaskDelay(pdMS_TO_TICKS(50));
+      continue;
+    }
+
+    uint32_t cameraMs = 0, sendMs = 0;
+    int compared = 1;
+    size_t bytes = 0;
+    int width = 0, height = 0;
+    bool sent = false;
+    {
+      CameraTurn turn;
+      const uint32_t started = millis();
+      // The phone's Flash button wins; without it, the Light setting saved on the setup page decides.
+      setFlash(bleFlash >= 0 ? bleFlash == 1 : (cfg.flash == 2 || (cfg.flash == 1 && mode == MODE_CAPTURE)));
+      useSize(mode);
+      camera_fb_t *fb = mode == MODE_CAPTURE ? grabSharpest(compared) : esp_camera_fb_get();
+      cameraMs = millis() - started;
+      if (fb) {
+        bytes = fb->len;
+        width = fb->width;
+        height = fb->height;
+        const uint32_t sendStarted = millis();
+        sent = sendPhoto(fb, mode);
+        sendMs = millis() - sendStarted;
+        esp_camera_fb_return(fb);
+      }
+    }
+
+    if (mode == MODE_CAPTURE) {
+      if (bytes == 0) sendStatus("no-frame");
+      Serial.printf("Bluetooth capture %s: %dx%d, %u bytes (sharpest of %d), camera %lu ms + send %lu ms\n",
+                    sent ? "sent" : "NOT sent", width, height, (unsigned)bytes, compared, (unsigned long)cameraMs,
+                    (unsigned long)sendMs);
+      if (bleWant == MODE_CAPTURE) bleWant = MODE_PREVIEW;  // back to the live picture
+    } else if (sent && ++blePreviewsSent % 10 == 1) {
+      Serial.printf("Bluetooth preview sent: %dx%d, %u bytes, camera %lu ms + send %lu ms (every 10th is logged)\n", width,
+                    height, (unsigned)bytes, (unsigned long)cameraMs, (unsigned long)sendMs);
+    }
+    vTaskDelay(pdMS_TO_TICKS(mode == MODE_PREVIEW ? BLE_PREVIEW_GAP_MS : 1));
+  }
+}
+
+static void startBluetooth() {
+  const String name = cameraName();
+  BLEDevice::init(name);
+  BLEDevice::setMTU(517);  // the largest; the phone picks what it can do
+  BLEServer *server = BLEDevice::createServer();
+  server->setCallbacks(new BleServerEvents());
+  BLEService *service = server->createService(BLE_SERVICE_UUID);
+  BLECharacteristic *control = service->createCharacteristic(BLE_CONTROL_UUID, BLECharacteristic::PROPERTY_WRITE);
+  control->setCallbacks(new BleControlEvents());
+  blePhoto = service->createCharacteristic(BLE_PHOTO_UUID, BLECharacteristic::PROPERTY_NOTIFY);
+  blePhoto->addDescriptor(new BLE2902());  // lets the phone switch the notifications on
+  service->start();
+  BLEAdvertising *advertising = BLEDevice::getAdvertising();
+  advertising->addServiceUUID(BLE_SERVICE_UUID);
+  advertising->setScanResponse(true);  // the name goes in the scan response: it does not fit next to the service ID
+  // Every 0.5-1 s instead of the library's 20-40 ms: Wi-Fi and Bluetooth share one radio, so this leaves it to the Wi-Fi
+  // most of the time. Chrome's list still shows the camera within a second.
+  advertising->setMinInterval(800);   // x 0.625 ms = 500 ms
+  advertising->setMaxInterval(1600);  // 1 s
+  BLEDevice::startAdvertising();
+  xTaskCreatePinnedToCore(bluetoothTask, "bluetooth", 8192, nullptr, 1, nullptr, 1);
+  Serial.printf("Bluetooth: advertising as \"%s\" (free memory %u bytes, %u of it internal)\n", name.c_str(),
+                (unsigned)ESP.getFreeHeap(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+}
+#else
+static bool bluetoothInUse() {
+  return false;
+}
+#endif
+
 void setup() {
+#ifndef DISABLE_BLUETOOTH
+  usePsramForBuffers();  // before anything else allocates: see the Bluetooth section
+#endif
   Serial.begin(115200);
   delay(500);
   Serial.println("\nEggplantCare ESP32-CAM starting");
@@ -912,10 +1232,18 @@ void setup() {
   prefs.begin("eggcam", false);
   const bool resetThreeTimes = noteBoot();
   const bool configured = loadSettings();
+
+  // The camera and Bluetooth start before the Wi-Fi steps, so a phone can use the camera over Bluetooth even while the
+  // Wi-Fi is down or the setup page is open. A camera that does not start still lets the setup page open.
+  cameraLock = xSemaphoreCreateMutex();
+  const bool cameraReady = startCamera();
+#ifndef DISABLE_BLUETOOTH
+  if (cameraReady) startBluetooth();
+#endif
   if (!configured) runSetupPortal("nothing saved yet", false);
   if (resetThreeTimes) runSetupPortal("RST pressed 3 times", true);
 
-  if (!startCamera()) {
+  if (!cameraReady) {
     Serial.println("Restarting in 10 s...");
     delay(10000);
     ESP.restart();
@@ -944,7 +1272,14 @@ void setup() {
 void loop() {
   closeResetWindow();
   checkSerialCommands();
+  // A phone gets its photos over Bluetooth: the Wi-Fi relay (and any Wi-Fi reconnecting) waits, leaving the radio and
+  // the camera to Bluetooth. It carries on when the phone disconnects.
+  if (bluetoothInUse()) {
+    delay(100);
+    return;
+  }
   connectWifi(LATER_WIFI_WAIT_MS);
+  if (bluetoothInUse()) return;  // connectWifi() stops early when a phone logs in over Bluetooth
 
 #ifdef HAS_ROOT_CA
   // The certificate check needs the real date. If the first try failed (the network blocked time servers for a while),
@@ -959,6 +1294,11 @@ void loop() {
   const uint32_t started = millis();
   if (exchange()) {
     failures = 0;
+    static bool reached = false;
+    if (!reached) {
+      reached = true;
+      printMemory("after the first request to the site");
+    }
     const uint32_t spent = millis() - started;
     if (spent < waitMs) delay(waitMs - spent);
     return;
@@ -966,7 +1306,7 @@ void loop() {
 
   secureClient.stop();
   plainClient.stop();
-  if (++failures >= MAX_FAILURES) ESP.restart();
+  if (++failures >= MAX_FAILURES && !bluetoothInUse()) ESP.restart();
   uint32_t pause = 2000UL * failures;  // back off: 2 s, 4 s, ... up to 30 s
   if (pause > 30000) pause = 30000;
   delay(pause);

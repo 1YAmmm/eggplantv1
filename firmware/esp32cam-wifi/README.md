@@ -13,8 +13,9 @@ need a computer or a new upload.
 > restarts, and sent a preview (about one photo a second) and a Capture photo (arriving in about 2-4 s) to the site on
 > Vercel, which the relay returned byte for byte. Not tried yet: the setup page and 3x RST from a phone, an iPhone or
 > Android phone using the app with it, the Wi-Fi of a phone hotspot, and photos of a real eggplant at a good distance with
-> the lens focused. The sharpest-of-3 Capture and the 600 ms settle time (see "Photo sizes") compile but have not been run
-> on the board yet.
+> the lens focused. The sharpest-of-3 Capture and the 600 ms settle time (see "Photo sizes") have been flashed to the board.
+> **Bluetooth** (section 5): flashed to the board, where Wi-Fi and HTTPS to the site keep working with Bluetooth on, and
+> tested in the browser against a simulated camera. Not tried yet: the real camera with an Android phone over Bluetooth.
 
 ## What you need
 
@@ -80,6 +81,38 @@ Leave the password boxes and the camera code empty to keep what is saved.
 On the phone open the site, tap **ESP32 camera**, type the same camera code, and tap **Scan with ESP32 camera**.
 "Waking the camera..." can take up to 10 seconds (the camera checks in every 10 s while nobody is looking). Aim using
 the preview, then tap **Capture**.
+
+## 5. Bluetooth instead of Wi-Fi (Android)
+
+The camera can also send its photos **straight to the phone over Bluetooth**, without Wi-Fi or the site's relay.
+
+- It works in **Chrome on Android** (and Chrome on a computer). iPhone browsers cannot use Bluetooth from a website, so
+  there the Bluetooth choice is greyed out.
+- In the app tap **ESP32 camera**, then **Connect by: Bluetooth**, keep the same camera code and tap **Scan with ESP32
+  camera**. Chrome shows a list: pick **`EggplantCam-xxxx`** (the same name as the setup Wi-Fi). Android may ask to allow
+  **Nearby devices** (older Android versions: Location). Then the preview, Focus number, Flash and Capture work as over Wi-Fi.
+- The phone stays connected between scans, so **Scan another** does not show the list again. It hangs up after 2 minutes
+  without scanning, or when you switch back to Wi-Fi. One phone at a time.
+- **While a phone is connected by Bluetooth, the camera pauses its Wi-Fi relay** (a phone using Wi-Fi at the same moment
+  sees "not responding"). The relay carries on when the Bluetooth phone hangs up.
+- Bluetooth also works while the camera cannot reach its Wi-Fi or shows its setup page. The phone itself still needs
+  internet once to open the site; the pest model then runs on the phone.
+- Range: about 10 m indoors. Chrome asks for the biggest Bluetooth packets (about 512 bytes), so a preview arrives several
+  times a second and a Capture photo (40-130 KB) takes about 2-4 s.
+- **Security:** the camera sends nothing until the phone sends the right camera code. The Bluetooth link itself is not
+  encrypted, so someone close by with a radio sniffer could read the code; change it if that matters to you.
+- Serial Monitor: `Bluetooth: advertising as "EggplantCam-xxxx" (free memory ...)` at start-up, then `Bluetooth: a phone
+  connected`, `Bluetooth: packet size 517 bytes`, `Bluetooth: right camera code; the Wi-Fi relay waits` and
+  `Bluetooth capture sent: 1024x768, ...`.
+- To switch Bluetooth off, uncomment `#define DISABLE_BLUETOOTH` in `config.h`.
+- **Memory:** the camera, Wi-Fi, HTTPS and Bluetooth all need the ESP32's small internal RAM. With Bluetooth on, the sketch
+  moves the Bluetooth stack's working memory and the HTTPS buffers into the 4 MB PSRAM (see the comment above
+  `usePsramForBuffers()` in the sketch). Measured on the board: 30 KB of internal RAM free with Wi-Fi connected and 28 KB
+  after the first request to the site; without the move only 3 KB were left and Wi-Fi could not connect (`code 2` /
+  `code 203`). The Serial Monitor prints `Memory with Wi-Fi: ...` at every connection.
+- Wi-Fi, Bluetooth and the camera together fill the ESP32's IRAM (fast memory for code) almost completely. To make room,
+  the sketch has its own small `mktime()` and `strptime()` instead of the C library's (see the comment in the sketch). If
+  a future board package update makes the build fail with `iram0_0_seg overflowed`, that is why: switch Bluetooth off.
 
 ## Power
 
@@ -163,5 +196,8 @@ field. Weak USB ports and long thin cables are the usual cause of random reboots
 | `Server: wrong camera code` | The code in the setup page differs from `ESP32_CAM_CODES` on the site, or the site was not redeployed. Press RST 3 times and fix it. |
 | `Server: ... relay is not set up` | `ESP32_CAM_CODES` or Upstash is missing on the site. |
 | The picture jumps between two different views, the Flash button does not match the LED, or the camera never goes idle | **Two cameras (or a test program) are using the same camera code**, so their photos mix on the server and a Capture is answered by whichever asks first. Switch one of them off, or give each its own code (`ESP32_CAM_CODES` takes several, comma-separated, and each camera's setup page holds its own). To check: put one camera in setup mode (type `setup` in the Serial Monitor); if photos keep arriving in the app, another one is sending. |
-| App stays on "Waking the camera..." | The camera is off, not on Wi-Fi, or the codes differ. Check the Serial Monitor. |
+| App stays on "Waking the camera..." | The camera is off, not on Wi-Fi, or the codes differ. Check the Serial Monitor. Or a phone is connected to the camera by Bluetooth, which pauses the Wi-Fi relay (`Bluetooth: right camera code; the Wi-Fi relay waits`). |
+| Bluetooth: the camera is not in Chrome's list | Bluetooth (on older Android also Location) is off on the phone, the camera is too far away or still starting, another phone is connected to it, or the sketch was built with `DISABLE_BLUETOOTH`. |
+| Bluetooth: "The camera did not accept this camera code" | The code in the app is not the one saved in the camera. The setup page never shows the saved code: press RST 3 times and type the code again there, the same as in the app. |
+| Bluetooth: "The Bluetooth connection was lost" | Too far away, or the camera restarted. Move closer, press Cancel and scan again. |
 | Photos are dark, green or blurry | Add light, and twist the lens until the app's Focus number peaks. Capture photos darker than the preview: set `CAPTURE_SETTLE_MS` to 1500 in `config.h`. |

@@ -33,6 +33,11 @@
  * if Capture photos come out darker than the live picture, 0 for the fastest Capture. */
 // #define CAPTURE_SETTLE_MS 600
 
+/* Bluetooth is on: a phone with Chrome on Android can connect straight to the camera by choosing "Bluetooth" in the app
+ * (same camera code). Uncomment to switch it off, for example if Wi-Fi or HTTPS becomes unstable: Bluetooth needs memory
+ * (the Serial Monitor prints how much is left after it starts) and nearly all of the camera's IRAM. */
+// #define DISABLE_BLUETOOTH
+
 /* Root certificates the site's HTTPS certificate must chain to. They let the camera check that it is really talking to
  * your site (otherwise anyone on the same Wi-Fi could read your camera code). These two cover *.vercel.app (Google
  * Trust Services, GTS Root R1) and custom domains that use Let's Encrypt (ISRG Root X1). Delete the definition of
